@@ -357,6 +357,11 @@ const erreurs = {
   ACCES_INTERDIT: 'ليست لديك صلاحية لهذا الإجراء.',
   LOGIN_DEJA_UTILISE: 'اسم المستخدم هذا موجود من قبل.',
   PARAMETRE_INCONNU: 'إعداد غير معروف.',
+  PARAMETRE_INVALIDE: 'قيمة غير صالحة لهذا الإعداد.',
+  STATUT_INVALIDE: 'حالة حساب غير معروفة.',
+  COMPTE_CLOTURE: 'هذا الحساب مغلق: لا يمكن تعديله بعد الآن.',
+  TACHE_DEJA_EXECUTEE: 'هذه المهمة الشهرية نُفّذت من قبل في هذا الشهر.',
+  MONTANT_TROP_PETIT: 'المبلغ صغير جدًا: بعد التحويل لن يتلقى الحساب المستفيد شيئًا.',
 }
 
 export default { textes, erreurs }

@@ -2,7 +2,7 @@
 import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -35,6 +35,14 @@ from app.services.procedures import effectuerDepot, effectuerRetrait, verifierMo
 DEMANDES_EN_COURS = (StatutDemande.EN_ATTENTE, StatutDemande.EN_ATTENTE_SUPERVISEUR)
 CHAMPS_CLIENT = ("numero_identite", "nom", "prenom", "telephone", "email", "adresse")
 CHAMPS_MODIFIABLES_PAR_CLIENT = ("telephone", "email", "adresse")
+
+# (minimum, maximum, nombre entier ?) accepté pour chaque paramètre modifiable par l'administrateur
+BORNES_PARAMETRES = {
+    "seuil_superviseur_dzd": (Decimal("1"), Decimal("100000000"), False),
+    "validite_bordereau_heures": (1, 168, True),
+    "validite_mdp_temporaire_jours": (1, 90, True),
+    "tentatives_max_connexion": (3, 10, True),
+}
 
 
 class Banque:
@@ -72,12 +80,27 @@ class Banque:
     def modifierParametre(self, cle: str, valeur: str, admin: Utilisateur) -> None:
         if cle not in config.PARAMETRES_PAR_DEFAUT:
             raise ErreurBancaire("PARAMETRE_INCONNU")
-        Decimal(valeur)
+        valeur = self._verifierParametre(cle, valeur)
         with self.atomique():
             enregistrement = self.db.get(Parametre, cle) or Parametre(cle=cle, valeur=valeur)
             enregistrement.valeur = valeur
             self.db.add(enregistrement)
             self.journaliser(admin, "MODIFICATION_PARAMETRE", cle, valeur)
+
+    @staticmethod
+    def _verifierParametre(cle: str, valeur: str) -> str:
+        minimum, maximum, entier = BORNES_PARAMETRES[cle]
+        try:
+            nombre = Decimal(str(valeur).strip())
+        except InvalidOperation:
+            raise ErreurBancaire("PARAMETRE_INVALIDE") from None
+        if (
+            not nombre.is_finite()
+            or (entier and nombre != nombre.to_integral_value())
+            or not minimum <= nombre <= maximum
+        ):
+            raise ErreurBancaire("PARAMETRE_INVALIDE", f"Valeur attendue entre {minimum} et {maximum}.")
+        return str(int(nombre)) if entier else str(nombre.quantize(Decimal("0.01")))
 
     def seuilSuperviseur(self) -> Decimal:
         return Decimal(self.parametre("seuil_superviseur_dzd"))
@@ -187,7 +210,12 @@ class Banque:
         return compte
 
     def changerStatutCompte(self, compte: CompteBancaire, statut: str, superviseur: Utilisateur) -> CompteBancaire:
-        statut = StatutCompte(statut)
+        try:
+            statut = StatutCompte(statut)
+        except ValueError:
+            raise ErreurBancaire("STATUT_INVALIDE") from None
+        if compte.statut == StatutCompte.CLOTURE:
+            raise ErreurBancaire("COMPTE_CLOTURE")
         if statut == StatutCompte.CLOTURE:
             en_cours = any(d.statut in DEMANDES_EN_COURS for d in compte.demandes)
             if compte.solde != 0 or compte.montant_bloque != 0 or en_cours:
@@ -200,6 +228,8 @@ class Banque:
     def modifierDecouvert(self, compte: CompteBancaire, decouvert: Decimal, superviseur: Utilisateur) -> CompteBancaire:
         if not isinstance(compte, CompteCourant) or decouvert < 0:
             raise ErreurBancaire("TYPE_COMPTE_INVALIDE", "Seul un compte courant a un découvert autorisé.")
+        if compte.statut == StatutCompte.CLOTURE:
+            raise ErreurBancaire("COMPTE_CLOTURE")
         with self.atomique():
             compte.decouvert_autorise = decouvert
             self.journaliser(superviseur, "MODIFICATION_DECOUVERT", compte.numero, str(decouvert))
@@ -217,6 +247,7 @@ class Banque:
             raise ErreurBancaire("TYPE_OPERATION_INVALIDE")
         valeur = verifierMontant(montant)
         compte.verifierActif()
+        self.expirerDemandes()  # libère l'argent réservé par des bordereaux périmés
         instant = maintenant()
         with self.atomique():
             if type_operation == TypeOperation.RETRAIT:
@@ -356,6 +387,7 @@ class Banque:
         valeur = verifierMontant(montant)
         if agent.role != Role.SUPERVISEUR and self.enDinars(valeur, compte.devise) > self.seuilSuperviseur():
             raise ErreurBancaire("APPROBATION_SUPERVISEUR")
+        self.expirerDemandes()
         with self.atomique():
             if type_operation == TypeOperation.DEPOT:
                 transaction = effectuerDepot(compte, valeur, "Dépôt au guichet", agent.id)
@@ -372,6 +404,13 @@ class Banque:
         if source.id == destination.id:
             raise ErreurBancaire("COMPTES_IDENTIQUES")
         agent_id = auteur.id if auteur.estPersonnel() else None
+        if (
+            auteur.estPersonnel()
+            and auteur.role != Role.SUPERVISEUR
+            and self.enDinars(valeur, source.devise) > self.seuilSuperviseur()
+        ):
+            raise ErreurBancaire("APPROBATION_SUPERVISEUR")
+        self.expirerDemandes()
         with self.atomique():
             source.verifierActif()
             destination.verifierActif()
@@ -380,6 +419,8 @@ class Banque:
                 raise ErreurBancaire(motif)
             frais = source.calculerFrais(TypeOperation.VIREMENT_EMIS, valeur)
             montant_credite = convertir(valeur, source.devise, destination.devise, self.tauxDeChange())
+            if montant_credite <= 0:
+                raise ErreurBancaire("MONTANT_TROP_PETIT")
             source.verifierRetrait(valeur + frais, ContexteRetrait(retrait_especes=False))
 
             emis = source.debiter(
@@ -408,7 +449,16 @@ class Banque:
             raise ErreurBancaire("TRANSACTION_INTROUVABLE")
         return transaction
 
+    def _verifierTacheMensuelle(self, action: str) -> None:
+        debut_du_mois = maintenant().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        deja_faite = self.db.scalar(
+            select(JournalAudit.id).where(JournalAudit.action == action, JournalAudit.date >= debut_du_mois).limit(1)
+        )
+        if deja_faite:
+            raise ErreurBancaire("TACHE_DEJA_EXECUTEE")
+
     def verserInterets(self, admin: Utilisateur | None = None) -> int:
+        self._verifierTacheMensuelle("TACHE_INTERETS")
         comptes = self.db.scalars(select(CompteEpargne).where(CompteEpargne.statut == StatutCompte.ACTIF)).all()
         nombre = 0
         with self.atomique():
@@ -421,9 +471,15 @@ class Banque:
         return nombre
 
     def preleverFraisTenue(self, admin: Utilisateur | None = None) -> int:
+        self._verifierTacheMensuelle("TACHE_FRAIS_TENUE")
         comptes = self.db.scalars(select(CompteCourant).where(CompteCourant.statut == StatutCompte.ACTIF)).all()
+        nombre = 0
         with self.atomique():
             for compte in comptes:
-                compte.debiter(compte.fraisTenueCompte(), TypeOperation.FRAIS, "Frais de tenue de compte")
-            self.journaliser(admin, "TACHE_FRAIS_TENUE", details=f"{len(comptes)} comptes")
-        return len(comptes)
+                frais = compte.fraisTenueCompte()
+                # comme pour un retrait : on ne prélève que si l'argent est disponible
+                if compte.peutRetirer(frais, ContexteRetrait(retrait_especes=False)):
+                    compte.debiter(frais, TypeOperation.FRAIS, "Frais de tenue de compte")
+                    nombre += 1
+            self.journaliser(admin, "TACHE_FRAIS_TENUE", details=f"{nombre} comptes sur {len(comptes)}")
+        return nombre

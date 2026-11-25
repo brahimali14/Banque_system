@@ -21,7 +21,7 @@ def test_compte_bancaire_est_abstrait():
 
 
 def test_valeurs_par_defaut_selon_le_type(courant, epargne, devise_eur):
-    assert courant.decouvert_autorise == D("20000.00")
+    assert courant.decouvert_autorise == D("0.00")  # pas de découvert sans accord du superviseur
     assert epargne.taux_interet == D("0.025")
     assert devise_eur.devise == "EUR"
 
@@ -33,14 +33,21 @@ def test_devise_interdite():
 
 
 def test_polymorphisme_meme_retrait_trois_resultats(courant, epargne, devise_eur):
-    """60 000 sur un solde de 50 000 : seul le compte courant (découvert) accepte."""
+    """60 000 sur un solde de 50 000 : seul le compte courant, avec un découvert accordé, accepte."""
     courant.solde = epargne.solde = devise_eur.solde = D("50000")
+    courant.decouvert_autorise = D("20000")
     devise_eur.plafond_retrait_jour = D("100000")
     resultats = {type(c).__name__: c.peutRetirer(D("60000")) for c in (courant, epargne, devise_eur)}
     assert resultats == {"CompteCourant": True, "CompteEpargne": False, "CompteDevise": False}
 
 
+def test_courant_sans_decouvert_refuse_au_dela_du_solde(courant):
+    assert courant.motifRefusRetrait(D("50000"), ContexteRetrait()) is None
+    assert courant.motifRefusRetrait(D("50000.01"), ContexteRetrait()) == "SOLDE_INSUFFISANT"
+
+
 def test_courant_refuse_au_dela_du_decouvert(courant):
+    courant.decouvert_autorise = D("20000")
     assert courant.motifRefusRetrait(D("70000.01"), ContexteRetrait()) == "SOLDE_INSUFFISANT"
 
 

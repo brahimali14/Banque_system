@@ -84,7 +84,7 @@ export default function DetailCompte() {
         <Indicateur titre={t('Solde')} valeur={montant(c.solde, devise)} />
         <Indicateur titre={t('Disponible')} valeur={montant(c.solde_disponible, devise)}
           detail={Number(c.montant_bloque) > 0 ? t('{montant} réservés', { montant: montant(c.montant_bloque, devise) }) : null} />
-        {c.decouvert_autorise && <Indicateur titre={t('Découvert autorisé')} valeur={montant(c.decouvert_autorise, devise)} />}
+        {(Number(c.decouvert_autorise) > 0 || (c.decouvert_autorise !== null && session.role === 'SUPERVISEUR')) && <Indicateur titre={t('Découvert autorisé')} valeur={montant(c.decouvert_autorise, devise)} />}
         {c.taux_interet && <Indicateur titre={t("Taux d'intérêt")} valeur={t('{taux} % / an', { taux: (Number(c.taux_interet) * 100).toFixed(2) })} />}
         {c.plafond_retrait_jour && <Indicateur titre={t('Plafond de retrait')} valeur={montant(c.plafond_retrait_jour, devise)} detail={t('par jour')} />}
       </div>

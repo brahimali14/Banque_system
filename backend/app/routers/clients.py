@@ -45,7 +45,9 @@ def ajouter_client(entree: ClientEntree, agent: Utilisateur = Depends(personnel)
 
 @routeur.get("/{client_id}", response_model=ClientSortie)
 def consulter_client(client_id: int, agent: Utilisateur = Depends(personnel), db: Session = Depends(get_db)):
-    return client_sortie(Banque(db).trouverClient(client_id))
+    banque = Banque(db)
+    banque.expirerDemandes()
+    return client_sortie(banque.trouverClient(client_id))
 
 
 @routeur.put("/{client_id}", response_model=ClientSortie)

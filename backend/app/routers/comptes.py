@@ -40,7 +40,9 @@ def _periode(debut: datetime | None, fin: datetime | None) -> tuple[datetime, da
 
 @routeur.get("/comptes/{numero}", response_model=CompteSortie)
 def consulter_compte(numero: str, utilisateur: Utilisateur = Depends(utilisateur_connecte), db: Session = Depends(get_db)):
-    compte = Banque(db).trouverCompte(numero)
+    banque = Banque(db)
+    banque.expirerDemandes()
+    compte = banque.trouverCompte(numero)
     verifier_acces_compte(utilisateur, compte)
     return compte_sortie(compte)
 

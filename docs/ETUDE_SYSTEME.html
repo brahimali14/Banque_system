@@ -123,7 +123,7 @@ Un client peut posséder **plusieurs comptes** (contrainte 1). Règle proposée 
 |---|---|---|---|
 | Préfixe du numéro | `BS-CC-000001` | `BS-CE-000002` | `BS-CD-000003` |
 | Devise | DZD | DZD | EUR ou USD |
-| Découvert | **Oui**, jusqu'à 20 000 DA (modifiable par compte) | Non | Non |
+| Découvert | **0 DA par défaut** ; seul le superviseur peut en accorder un, compte par compte | Non | Non |
 | Solde minimum | − découvert autorisé | 1 000 DA | 0 |
 | Limite de retraits | 200 000 DA / jour | **2 retraits / mois** | 1 000 EUR ou USD / jour |
 | Virement sortant | Vers n'importe quel compte | **Uniquement vers un compte du même client** | Vers n'importe quel compte (conversion si devise différente) |
@@ -1334,7 +1334,7 @@ gantt
 
 ## 17. Points à valider par le groupe
 
-1. **Valeurs fictives** : découvert 20 000 DA, plafond 200 000 DA / jour, seuil superviseur 500 000 DA, validité des bordereaux 24 h, mot de passe temporaire 7 jours — à garder ou changer ?
+1. **Valeurs fictives** : aucun découvert par défaut (accordé par le superviseur), plafond 200 000 DA / jour, seuil superviseur 500 000 DA, validité des bordereaux 24 h, mot de passe temporaire 7 jours — à garder ou changer ?
 2. **Devises** : seulement EUR et USD, ou ajouter d'autres ?
 3. **Comptes autorisés par client** : plusieurs courants, un seul épargne, un compte devise par devise — d'accord ?
 4. **Format du nom d'utilisateur** : `prenom.nom` (proposé) ou un identifiant numérique (ex. `100245`) ?

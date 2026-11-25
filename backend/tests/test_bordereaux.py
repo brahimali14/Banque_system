@@ -83,15 +83,15 @@ def test_annulation_par_le_client(http, client_amine):
 
 
 def test_retrait_refuse_si_solde_insuffisant(http, client_amine):
-    reponse = _demander(http, _compte(client_amine), "RETRAIT", 80000)  # 50 000 + 20 000 de découvert
+    reponse = _demander(http, _compte(client_amine), "RETRAIT", 50000.01)  # solde : 50 000, pas de découvert
     assert reponse.status_code == 422
     assert reponse.json()["code"] == "SOLDE_INSUFFISANT"
 
 
 def test_double_demande_avec_le_meme_argent_impossible(http, client_amine):
     compte = _compte(client_amine)
-    assert _demander(http, compte, "RETRAIT", 60000).status_code == 201
-    assert _demander(http, compte, "RETRAIT", 60000).json()["code"] == "SOLDE_INSUFFISANT"
+    assert _demander(http, compte, "RETRAIT", 30000).status_code == 201
+    assert _demander(http, compte, "RETRAIT", 30000).json()["code"] == "SOLDE_INSUFFISANT"
 
 
 def test_depot_montant_negatif(http, client_amine):

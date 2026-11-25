@@ -8,7 +8,7 @@ Simulateur pédagogique : **toutes les données sont fictives**.
 | Étude et conception | Markdown + Mermaid → PDF | ✅ [docs/ETUDE_SYSTEME.pdf](docs/ETUDE_SYSTEME.pdf) |
 | Rapport sur les paradigmes | Markdown + Mermaid → PDF | ✅ [docs/RAPPORT_PARADIGMES.pdf](docs/RAPPORT_PARADIGMES.pdf) · explication en arabe : [docs/RAPPORT_PARADIGMES_AR.pdf](docs/RAPPORT_PARADIGMES_AR.pdf) |
 | Backend | Python 3.12+ · FastAPI · SQLAlchemy · SQLite · ReportLab | ✅ |
-| Tests backend | Pytest (104 tests) | ✅ |
+| Tests backend | Pytest (124 tests) | ✅ |
 | Frontend | React 19 · Vite · React Router · Recharts | ✅ |
 | Tests frontend | Vitest + Testing Library (23 tests) | ✅ |
 | Langues de l'interface | Français · English · العربية (de droite à gauche) | ✅ |
@@ -81,13 +81,13 @@ Ce mot de passe simple est enregistré directement par `seed.py`. Un mot de pass
 
 - **Clients** : ajout (avec génération automatique du nom d'utilisateur et d'un mot de passe temporaire), modification, fiche, recherche.
 - **Première connexion** : changement de mot de passe obligatoire, verrouillage après 5 échecs, réinitialisation par l'agent.
-- **Comptes** : courant (découvert), épargne (intérêts, 2 retraits / mois, solde minimum), devise (EUR / USD).
+- **Comptes** : courant (pas de découvert, sauf s'il est accordé par le superviseur), épargne (intérêts, 2 retraits / mois, solde minimum), devise (EUR / USD).
 - **Bordereaux** : le client demande un dépôt / retrait en ligne → PDF avec un **numéro unique** (ex. `RET-K7M2-9QXB`) → l'agent **tape le numéro** au guichet (pas besoin de caméra) → Accepter / Refuser → reçu PDF.
 - **Retrait** : le montant est réservé dès la demande, libéré en cas de refus, d'annulation ou d'expiration (24 h).
 - **Superviseur** : approbation au-dessus de 500 000 DA, blocage / clôture de compte, tableau de bord.
 - **Virement atomique** avec frais et conversion de devise.
 - **Statistiques** : historique filtrable, totaux, évolution mensuelle, relevé PDF.
-- **Administration** : agents, paramètres, taux de change, journal d'audit, tâches mensuelles.
+- **Administration** : agents, paramètres (valeurs contrôlées), taux de change, journal d'audit, tâches mensuelles (une seule fois par mois ; les frais ne rendent jamais un solde négatif).
 
 ## Où trouver chaque paradigme
 

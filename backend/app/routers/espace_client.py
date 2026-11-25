@@ -35,7 +35,8 @@ def modifier_coordonnees(
 
 
 @routeur.get("/comptes", response_model=list[CompteSortie])
-def mes_comptes(utilisateur: Utilisateur = Depends(client_connecte)):
+def mes_comptes(utilisateur: Utilisateur = Depends(client_connecte), db: Session = Depends(get_db)):
+    Banque(db).expirerDemandes()  # l'argent des bordereaux périmés redevient disponible
     return [compte_sortie(c) for c in utilisateur.client.comptes]
 
 

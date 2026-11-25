@@ -361,6 +361,11 @@ const erreurs = {
   ACCES_INTERDIT: 'You do not have permission for this action.',
   LOGIN_DEJA_UTILISE: 'This username already exists.',
   PARAMETRE_INCONNU: 'Unknown setting.',
+  PARAMETRE_INVALIDE: 'Invalid value for this setting.',
+  STATUT_INVALIDE: 'Unknown account status.',
+  COMPTE_CLOTURE: 'This account is closed: it can no longer be changed.',
+  TACHE_DEJA_EXECUTEE: 'This monthly task has already been run this month.',
+  MONTANT_TROP_PETIT: 'Amount too small: after conversion, the receiving account would get nothing.',
 }
 
 export default { textes, erreurs }

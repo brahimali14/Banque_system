@@ -90,7 +90,7 @@ def test_administration(http, admin):
     connexion = http.post("/api/auth/connexion", json={"login": "nouvel.agent", "mot_de_passe": cree.json()["mot_de_passe_temporaire"]})
     assert connexion.json()["doit_changer_mdp"] is True
 
-    assert http.put("/api/admin/parametres/seuil_superviseur_dzd", json={"valeur": "100000"}, headers=admin_h).json()["seuil_superviseur_dzd"] == "100000"
+    assert http.put("/api/admin/parametres/seuil_superviseur_dzd", json={"valeur": "100000"}, headers=admin_h).json()["seuil_superviseur_dzd"] == "100000.00"
     assert http.put("/api/admin/taux-change/EUR", json={"taux_vers_dzd": "152.5"}, headers=admin_h).json()["EUR"] == "152.5"
     assert http.post("/api/admin/taches/verser-interets", headers=admin_h).status_code == 200
     actions = [ligne["action"] for ligne in http.get("/api/admin/audit", headers=admin_h).json()]

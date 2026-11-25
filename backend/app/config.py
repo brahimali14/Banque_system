@@ -11,7 +11,9 @@ JWT_DUREE_MINUTES = 120
 
 NOM_BANQUE = "BankServices"
 
-DECOUVERT_COURANT = Decimal("20000.00")
+# Pas de découvert par défaut : un retrait exige de l'argent disponible.
+# Le superviseur peut accorder un découvert à un compte courant précis.
+DECOUVERT_COURANT = Decimal("0.00")
 PLAFOND_RETRAIT_JOUR_COURANT = Decimal("200000.00")
 SOLDE_MINIMUM_EPARGNE = Decimal("1000.00")
 RETRAITS_MAX_MOIS_EPARGNE = 2

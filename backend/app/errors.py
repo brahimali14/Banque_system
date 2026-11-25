@@ -37,6 +37,11 @@ MESSAGES = {
     "ACCES_INTERDIT": "Vous n'avez pas les droits pour cette action.",
     "LOGIN_DEJA_UTILISE": "Ce nom d'utilisateur existe déjà.",
     "PARAMETRE_INCONNU": "Paramètre inconnu.",
+    "PARAMETRE_INVALIDE": "Valeur invalide pour ce paramètre.",
+    "STATUT_INVALIDE": "Statut de compte inconnu.",
+    "COMPTE_CLOTURE": "Ce compte est clôturé : il ne peut plus être modifié.",
+    "TACHE_DEJA_EXECUTEE": "Cette tâche mensuelle a déjà été exécutée ce mois-ci.",
+    "MONTANT_TROP_PETIT": "Montant trop petit : après conversion, le compte destinataire ne recevrait rien.",
 }
 
 STATUTS_HTTP = {
@@ -49,6 +54,7 @@ STATUTS_HTTP = {
     "DEVISE_DEJA_EXISTANT": 409,
     "LOGIN_DEJA_UTILISE": 409,
     "BORDEREAU_DEJA_TRAITE": 409,
+    "TACHE_DEJA_EXECUTEE": 409,
     "BORDEREAU_EXPIRE": 410,
     "IDENTIFIANTS_INCORRECTS": 401,
     "NON_AUTHENTIFIE": 401,
