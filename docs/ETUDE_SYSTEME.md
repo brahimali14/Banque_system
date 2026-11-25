@@ -1,0 +1,1295 @@
+# BankServices — Étude et conception du système
+
+> Module : Génie Logiciel — Paradigmes de programmation · Remise : 28/11/2026
+> Stack retenue : **React (Vite)** · **Python / FastAPI** · **SQLite** · **Pytest / Vitest** · **Git**
+> Simulateur pédagogique : toutes les données (clients, montants, taux de change) sont **fictives**.
+
+---
+
+## Sommaire
+
+1. [Vision du système](#1-vision-du-système)
+2. [Acteurs](#2-acteurs)
+3. [Types de comptes et règles métier](#3-types-de-comptes-et-règles-métier)
+4. [Diagramme de cas d'utilisation — vue globale](#4-diagramme-de-cas-dutilisation--vue-globale)
+5. [Cas d'utilisation détaillés par module](#5-cas-dutilisation-détaillés-par-module)
+6. [Fiches descriptives des cas principaux](#6-fiches-descriptives-des-cas-principaux)
+7. [Circuit Bordereau PDF à numéro unique](#7-circuit-bordereau-pdf-à-numéro-unique)
+8. [Virement atomique (avec conversion de devise)](#8-virement-atomique-avec-conversion-de-devise)
+9. [Diagramme de classes](#9-diagramme-de-classes)
+10. [Modèle de données](#10-modèle-de-données)
+11. [Architecture technique](#11-architecture-technique)
+12. [API REST](#12-api-rest)
+13. [Écrans de l'interface](#13-écrans-de-linterface)
+14. [Correspondance avec les paradigmes](#14-correspondance-avec-les-paradigmes)
+15. [Couverture des exigences du sujet](#15-couverture-des-exigences-du-sujet)
+16. [Plan de réalisation](#16-plan-de-réalisation)
+17. [Points à valider par le groupe](#17-points-à-valider-par-le-groupe)
+
+---
+
+## 1. Vision du système
+
+**BankServices** est une application Web qui gère les clients d'une banque, leurs comptes et leurs opérations.
+En plus de ce que demande le sujet, le système ajoute :
+
+| Ajout | Idée |
+|---|---|
+| **Plusieurs types de comptes** | Chaque client peut avoir un compte **courant** (DZD), un compte **épargne** (DZD) et des comptes **devises** (EUR, USD). |
+| **Accès client automatique** | À la création du client, le système génère un **nom d'utilisateur** et un **mot de passe temporaire**. À la première connexion, le client est **obligé de choisir son propre mot de passe**. |
+| **Bordereau PDF à numéro unique** | Quand le client demande un dépôt ou un retrait, le logiciel génère un **PDF** avec un **numéro de bordereau unique** (ex. `RET-K7M2-9QXB`). |
+| **Validation au guichet sans caméra** | L'agent **saisit le numéro** du bordereau au clavier : une interface s'ouvre avec le détail de l'opération et deux boutons **Accepter / Refuser**. |
+| **Double validation** | Au-dessus d'un seuil (500 000 DA), l'opération doit aussi être approuvée par un **superviseur**. |
+| **Reçu PDF** | Après validation, un reçu PDF est généré avec un numéro de reçu unique vérifiable. |
+| **Journal d'audit** | Chaque connexion, recherche de bordereau, validation ou refus est tracé (qui, quand, quoi). |
+
+L'application a trois espaces :
+
+- **Espace Client** — consulter ses comptes, demander un dépôt/retrait, télécharger le bordereau, faire un virement, voir ses statistiques.
+- **Espace Agent (guichet)** — gérer les clients et les comptes, saisir le numéro des bordereaux, valider ou refuser.
+- **Espace Administration** — utilisateurs, paramètres (plafonds, taux, frais), taux de change, journal d'audit.
+
+---
+
+## 2. Acteurs
+
+| Acteur | Type | Rôle |
+|---|---|---|
+| **Client** | Principal (humain) | Titulaire d'un ou plusieurs comptes. Fait ses demandes en ligne et se présente au guichet avec le bordereau. |
+| **Agent bancaire** (guichetier) | Principal (humain) | Gère les clients et les comptes, remet les identifiants aux nouveaux clients, saisit les numéros de bordereau, accepte ou refuse les opérations, fait des opérations directes au guichet. |
+| **Superviseur** (chef d'agence) | Principal (humain) — *hérite de l'Agent* | Tout ce que fait l'agent + approuve les opérations au-dessus du seuil, bloque ou clôture un compte. |
+| **Administrateur** | Principal (humain) | Gère les comptes utilisateurs (agents, superviseurs), les paramètres et les taux de change. Consulte le journal d'audit. |
+| **Système (horloge)** | Secondaire (automatique) | Tâches planifiées : expiration des bordereaux, intérêts de l'épargne, frais de tenue de compte, remise à zéro des compteurs. |
+
+---
+
+## 3. Types de comptes et règles métier
+
+### 3.1 Les trois types de comptes
+
+Un client peut posséder **plusieurs comptes** (contrainte 1). Règle proposée : plusieurs comptes courants autorisés, **au plus un compte épargne**, et **au plus un compte devise par devise**.
+
+| Règle | Compte courant | Compte épargne | Compte devise |
+|---|---|---|---|
+| Préfixe du numéro | `BS-CC-000001` | `BS-CE-000002` | `BS-CD-000003` |
+| Devise | DZD | DZD | EUR ou USD |
+| Découvert | **Oui**, jusqu'à 20 000 DA (modifiable par compte) | Non | Non |
+| Solde minimum | − découvert autorisé | 1 000 DA | 0 |
+| Limite de retraits | 200 000 DA / jour | **2 retraits / mois** | 1 000 EUR ou USD / jour |
+| Virement sortant | Vers n'importe quel compte | **Uniquement vers un compte du même client** | Vers n'importe quel compte (conversion si devise différente) |
+| Intérêts | Non | **2,5 % / an**, versés chaque mois | Non |
+| Frais | Tenue de compte 150 DA / mois · virement 0,5 % (min 50, max 1 000 DA) | Aucun | Virement 1 % (min 1, max 20 unités) |
+| Règle `peutRetirer(m)` | `m ≤ solde − bloqué + découvert` **et** `m ≤ plafond jour restant` | `solde − bloqué − m ≥ 1 000` **et** `retraits du mois < 2` | `m ≤ solde − bloqué` **et** `m ≤ plafond jour restant` |
+
+> La méthode `peutRetirer()` est **la même signature** pour les trois classes mais **une règle différente** pour chacune : c'est le **polymorphisme** demandé par la partie C.
+
+### 3.2 Paramètres globaux (fictifs, modifiables par l'administrateur)
+
+| Paramètre | Valeur |
+|---|---|
+| Validité d'un bordereau | 24 heures |
+| Seuil de double validation (superviseur) | 500 000 DA (ou équivalent en devise) |
+| Taux de change fictifs | 1 EUR = 150,00 DZD · 1 USD = 135,00 DZD |
+| Précision des montants | `Decimal` Python, stockés en **centimes entiers** dans SQLite (qui n'a pas de vrai type décimal), arrondi `ROUND_HALF_UP` à 2 décimales |
+
+### 3.3 Solde, montant bloqué et solde disponible
+
+Pour qu'un client ne puisse pas demander deux retraits avec le même argent, le **retrait est réservé** dès la création de la demande :
+
+```
+solde disponible = solde − montant bloqué (+ découvert pour le compte courant)
+```
+
+| Événement | Effet sur le compte |
+|---|---|
+| Demande de retrait créée | `montant_bloque += montant` (le solde ne bouge pas) |
+| Retrait validé au guichet | `solde -= montant` et `montant_bloque -= montant` |
+| Retrait refusé / annulé / expiré | `montant_bloque -= montant` (l'argent redevient disponible) |
+| Demande de dépôt créée | Aucun effet (l'argent n'est pas encore reçu) |
+| Dépôt validé au guichet | `solde += montant` |
+
+### 3.4 Messages d'erreur (contrainte 9)
+
+| Code | Message affiché |
+|---|---|
+| `MONTANT_INVALIDE` | Le montant doit être strictement positif. |
+| `SOLDE_INSUFFISANT` | Solde disponible insuffisant pour cette opération. |
+| `PLAFOND_DEPASSE` | Le plafond de retrait journalier est atteint. |
+| `LIMITE_RETRAITS_EPARGNE` | Un compte épargne est limité à 2 retraits par mois. |
+| `SOLDE_MINIMUM_EPARGNE` | Le solde d'un compte épargne ne peut pas descendre sous 1 000 DA. |
+| `COMPTES_IDENTIQUES` | Un virement doit concerner deux comptes distincts. |
+| `VIREMENT_EPARGNE_INTERDIT` | Un compte épargne ne peut virer que vers un compte du même client. |
+| `COMPTE_BLOQUE` | Ce compte est bloqué ou clôturé. |
+| `NUMERO_INVALIDE` | Numéro de bordereau mal saisi, vérifiez les caractères. |
+| `BORDEREAU_INTROUVABLE` | Aucun bordereau ne correspond à ce numéro. |
+| `BORDEREAU_EXPIRE` | Ce bordereau a expiré, le client doit refaire une demande. |
+| `BORDEREAU_DEJA_TRAITE` | Ce bordereau a déjà été traité. |
+| `IDENTIFIANTS_INCORRECTS` | Nom d'utilisateur ou mot de passe incorrect. |
+| `ACCES_VERROUILLE` | Accès verrouillé après 5 tentatives, contactez votre agence. |
+| `MOT_DE_PASSE_TEMPORAIRE_EXPIRE` | Votre mot de passe temporaire a expiré, demandez-en un nouveau à l'agence. |
+| `CHANGEMENT_MDP_REQUIS` | Vous devez choisir un nouveau mot de passe avant de continuer. |
+| `MOT_DE_PASSE_FAIBLE` | Au moins 8 caractères, une majuscule, une minuscule et un chiffre. |
+| `MOT_DE_PASSE_IDENTIQUE` | Le nouveau mot de passe doit être différent du mot de passe temporaire. |
+
+### 3.5 Accès en ligne du client : identifiants automatiques et premier mot de passe
+
+Quand l'agent **ajoute un client**, le système crée automatiquement son accès en ligne :
+
+| Règle | Détail |
+|---|---|
+| Nom d'utilisateur | Généré automatiquement : `prenom.nom` en minuscules, sans accents ni espaces (ex. `amine.benali`). Si le nom existe déjà : `amine.benali2`, `amine.benali3`… **Unique**. |
+| Mot de passe temporaire | 10 caractères aléatoires générés avec le module `secrets` (ex. `K7m#q2Lx9P`). Affiché **une seule fois** à l'agent. |
+| Remise au client | Le système produit une **Fiche de remise des identifiants (PDF)** que l'agent imprime et donne au client. |
+| Stockage | Seul le **hachage bcrypt** est enregistré, jamais le mot de passe en clair. |
+| Validité | Le mot de passe temporaire expire après **7 jours** s'il n'a pas été utilisé. |
+| Première connexion | Le client se connecte avec le mot de passe temporaire → il est **redirigé obligatoirement** vers l'écran « Choisir mon mot de passe ». Tant qu'il ne l'a pas changé, toutes les autres pages et routes de l'API répondent `CHANGEMENT_MDP_REQUIS`. |
+| Règles du nouveau mot de passe | 8 caractères minimum, au moins une majuscule, une minuscule et un chiffre, différent du mot de passe temporaire, saisi deux fois (confirmation). |
+| Sécurité | 5 échecs de connexion → accès **verrouillé**. L'agent peut **réinitialiser l'accès** : nouveau mot de passe temporaire, nouvelle fiche PDF, retour à l'étape « première connexion ». |
+| Changement ultérieur | Depuis son profil, le client peut changer son mot de passe à tout moment (ancien mot de passe demandé). |
+| Agents et superviseurs | Même mécanisme : l'administrateur crée le compte, le système génère un mot de passe temporaire à changer à la première connexion. |
+
+#### Cycle de vie de l'accès en ligne
+
+```mermaid
+stateDiagram-v2
+    [*] --> TEMPORAIRE : l'agent crée le client
+    TEMPORAIRE --> ACTIF : première connexion + nouveau mot de passe choisi
+    TEMPORAIRE --> EXPIRE : 7 jours sans connexion
+    TEMPORAIRE --> VERROUILLE : 5 échecs de connexion
+    ACTIF --> VERROUILLE : 5 échecs de connexion
+    ACTIF --> ACTIF : changement de mot de passe depuis le profil
+    VERROUILLE --> TEMPORAIRE : l'agent réinitialise l'accès
+    EXPIRE --> TEMPORAIRE : l'agent réinitialise l'accès
+    ACTIF --> DESACTIVE : client supprimé ou tous ses comptes clôturés
+    DESACTIVE --> [*]
+```
+
+#### Séquence — Création du client et première connexion
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor AG as Agent
+    participant API as API FastAPI
+    participant DB as SQLite
+    actor CL as Client
+
+    AG->>API: POST /api/clients (nom, prénom, n° identité, téléphone...)
+    API->>DB: Vérifie l'unicité du n° d'identité
+    API->>API: genererNomUtilisateur(prénom, nom) donne amine.benali
+    API->>API: genererMotDePasseTemporaire() avec secrets
+    API->>DB: INSERT client + INSERT utilisateur (hash bcrypt, statut TEMPORAIRE)
+    API-->>AG: Client créé + identifiants affichés une seule fois
+    AG->>API: GET /api/clients/12/fiche-identifiants.pdf
+    API-->>AG: PDF à imprimer et remettre au client
+
+    Note over AG,CL: Le client rentre chez lui avec la fiche
+
+    CL->>API: POST /api/auth/login (amine.benali, mot de passe temporaire)
+    API->>DB: Vérifie le hash et le statut
+    API-->>CL: Jeton limité (doit_changer_mdp = true)
+    CL->>API: GET /api/comptes (essai d'accès)
+    API-->>CL: 403 CHANGEMENT_MDP_REQUIS, redirection vers /changer-mot-de-passe
+    CL->>API: POST /api/auth/changer-mot-de-passe (nouveau, confirmation)
+    API->>API: verifierRobustesse(nouveau)
+    alt Mot de passe faible ou identique
+        API-->>CL: 422 MOT_DE_PASSE_FAIBLE ou MOT_DE_PASSE_IDENTIQUE
+    else Mot de passe accepté
+        API->>DB: UPDATE utilisateur (nouveau hash, statut ACTIF)
+        API-->>CL: Nouveau jeton complet, accès au tableau de bord
+    end
+```
+
+---
+
+## 4. Diagramme de cas d'utilisation — vue globale
+
+> Mermaid n'a pas de diagramme « use case » natif : les acteurs sont représentés par des rectangles, les cas d'utilisation par des ovales, et le cadre représente les limites du système.
+
+```mermaid
+flowchart LR
+    CL["🧑 Client"]
+    AG["🧑‍💼 Agent bancaire"]
+    SU["👔 Superviseur"]
+    AD["🛠️ Administrateur"]
+    SY["⏰ Système (horloge)"]
+
+    subgraph BS["Système BankServices"]
+        direction TB
+        UC0(["S'authentifier"])
+        UC0b(["Changer son mot de passe (obligatoire à la 1re connexion)"])
+        subgraph M1["Module 1 — Clients"]
+            UC1(["Gérer les clients + générer leurs identifiants"])
+            UC1b(["Consulter / modifier son profil"])
+        end
+        subgraph M2["Module 2 — Comptes"]
+            UC2(["Ouvrir et gérer un compte"])
+            UC2b(["Consulter ses comptes et soldes"])
+            UC2c(["Bloquer / clôturer un compte"])
+        end
+        subgraph M3["Module 3 — Opérations"]
+            UC3(["Demander un dépôt / retrait (bordereau PDF à numéro unique)"])
+            UC3b(["Effectuer un virement"])
+            UC3c(["Saisir le numéro et valider un bordereau"])
+            UC3d(["Opération directe au guichet"])
+            UC3e(["Approuver une opération sensible"])
+        end
+        subgraph M4["Module 4 — Consultation et statistiques"]
+            UC4(["Consulter et filtrer l'historique"])
+            UC4b(["Voir statistiques et graphiques"])
+        end
+        subgraph M5["Module 5 — Administration"]
+            UC5(["Gérer utilisateurs et paramètres"])
+            UC5b(["Consulter le journal d'audit"])
+            UC5c(["Exécuter les tâches planifiées"])
+        end
+    end
+
+    CL --- UC0 & UC0b & UC1b & UC2b & UC3 & UC3b & UC4 & UC4b
+    UC0b -. "«extend» (1re connexion)" .-> UC0
+    UC0 & UC1 & UC2 & UC3c & UC3d & UC4 --- AG
+    UC2c & UC3e & UC4b --- SU
+    UC0 & UC5 & UC5b --- AD
+    UC5c --- SY
+    SU -. "hérite de" .-> AG
+
+    classDef actor fill:#e8f0fe,stroke:#3367d6,stroke-width:2px,color:#0b2a6b
+    class CL,AG,SU,AD,SY actor
+```
+
+---
+
+## 5. Cas d'utilisation détaillés par module
+
+Légende : `«include»` = toujours exécuté · `«extend»` = exécuté seulement sous condition.
+
+### 5.1 Module 1 — Gestion des clients
+
+```mermaid
+flowchart LR
+    AG["🧑‍💼 Agent"]
+    CL["🧑 Client"]
+
+    subgraph S["Gestion des clients"]
+        A1(["Ajouter un client"])
+        A2(["Modifier les informations d'un client"])
+        A3(["Consulter la fiche client"])
+        A4(["Rechercher un client"])
+        A5(["Afficher la liste des clients"])
+        A6(["Générer nom d'utilisateur + mot de passe temporaire"])
+        A6b(["Imprimer la fiche de remise des identifiants (PDF)"])
+        A6c(["Réinitialiser l'accès du client"])
+        A7(["Vérifier l'unicité du n° d'identité"])
+        A8(["Filtrer par nom, téléphone ou n° de compte"])
+        A9(["Consulter son profil"])
+        A10(["Modifier ses coordonnées"])
+        A12(["Se connecter"])
+        A13(["Choisir son mot de passe"])
+        A14(["Vérifier la robustesse du mot de passe"])
+        A15(["Changer son mot de passe depuis le profil"])
+    end
+
+    AG --- A1 & A2 & A3 & A4 & A5 & A6c
+    CL --- A9 & A10 & A12 & A15
+    A1 -. "«include»" .-> A7
+    A1 -. "«include»" .-> A6
+    A6 -. "«include»" .-> A6b
+    A6c -. "«include»" .-> A6
+    A13 -. "«extend» (mot de passe temporaire)" .-> A12
+    A13 -. "«include»" .-> A14
+    A15 -. "«include»" .-> A14
+    A8 -. "«extend»" .-> A4
+    A3 -. "«include»" .-> A11(["Afficher ses comptes et ses demandes"])
+
+    classDef actor fill:#e8f0fe,stroke:#3367d6,stroke-width:2px
+    class AG,CL actor
+```
+
+### 5.2 Module 2 — Gestion des comptes
+
+```mermaid
+flowchart LR
+    AG["🧑‍💼 Agent"]
+    SU["👔 Superviseur"]
+    CL["🧑 Client"]
+
+    subgraph S["Gestion des comptes"]
+        B1(["Ouvrir un compte"])
+        B1a(["Ouvrir un compte courant"])
+        B1b(["Ouvrir un compte épargne"])
+        B1c(["Ouvrir un compte devise"])
+        B2(["Associer le compte à un client"])
+        B3(["Générer le numéro unique"])
+        B4(["Choisir la devise EUR / USD"])
+        B5(["Consulter les informations d'un compte"])
+        B6(["Consulter le solde"])
+        B7(["Bloquer un compte"])
+        B8(["Clôturer un compte"])
+        B9(["Vérifier solde nul et aucune demande en cours"])
+        B10(["Télécharger un relevé PDF"])
+        B11(["Modifier le découvert autorisé"])
+    end
+
+    AG --- B1 & B5 & B6
+    SU --- B7 & B8 & B11
+    CL --- B5 & B6 & B10
+    B1a -- "est un" --> B1
+    B1b -- "est un" --> B1
+    B1c -- "est un" --> B1
+    B1 -. "«include»" .-> B2
+    B1 -. "«include»" .-> B3
+    B1c -. "«include»" .-> B4
+    B8 -. "«include»" .-> B9
+
+    classDef actor fill:#e8f0fe,stroke:#3367d6,stroke-width:2px
+    class AG,SU,CL actor
+```
+
+### 5.3 Module 3 — Opérations bancaires (avec bordereau à numéro unique)
+
+```mermaid
+flowchart LR
+    CL["🧑 Client"]
+    AG["🧑‍💼 Agent"]
+    SU["👔 Superviseur"]
+    SY["⏰ Système"]
+
+    subgraph S["Opérations bancaires"]
+        C1(["Demander un dépôt"])
+        C2(["Demander un retrait"])
+        C3(["Vérifier le montant > 0"])
+        C4(["Vérifier le solde disponible (peutRetirer)"])
+        C5(["Bloquer le montant"])
+        C6(["Générer le bordereau PDF"])
+        C7(["Générer le numéro unique (aléatoire + clé de contrôle)"])
+        C8(["Télécharger le bordereau"])
+        C9(["Annuler une demande"])
+        C10(["Suivre ses demandes"])
+
+        D1(["Saisir le numéro du bordereau"])
+        D2(["Lire le QR avec une douchette USB (optionnel)"])
+        D3(["Vérifier : clé de contrôle, existence, expiration, statut"])
+        D3b(["Vérifier la pièce d'identité du client"])
+        D4(["Accepter l'opération"])
+        D5(["Refuser l'opération (avec motif)"])
+        D6(["Enregistrer la transaction (atomique)"])
+        D7(["Générer le reçu PDF"])
+        D8(["Transmettre au superviseur (montant > seuil)"])
+        D9(["Approuver / rejeter l'opération sensible"])
+        D10(["Opération directe au guichet"])
+
+        E1(["Effectuer un virement"])
+        E2(["Vérifier comptes distincts"])
+        E3(["Calculer les frais"])
+        E4(["Convertir la devise"])
+
+        F1(["Expirer les bordereaux non traités"])
+    end
+
+    CL --- C1 & C2 & C8 & C9 & C10 & E1
+    AG --- D1 & D4 & D5 & D10
+    SU --- D9
+    SY --- F1
+
+    C1 -. "«include»" .-> C3
+    C2 -. "«include»" .-> C3
+    C2 -. "«include»" .-> C4
+    C2 -. "«include»" .-> C5
+    C1 -. "«include»" .-> C6
+    C2 -. "«include»" .-> C6
+    C6 -. "«include»" .-> C7
+    D2 -. "«extend» (si douchette disponible)" .-> D1
+    D1 -. "«include»" .-> D3
+    D4 -. "«include»" .-> D3b
+    D4 -. "«include»" .-> D6
+    D4 -. "«include»" .-> D7
+    D8 -. "«extend» (montant > 500 000 DA)" .-> D4
+    D10 -. "«include»" .-> D6
+    E1 -. "«include»" .-> E2
+    E1 -. "«include»" .-> E3
+    E1 -. "«include»" .-> D6
+    E4 -. "«extend» (devises différentes)" .-> E1
+
+    classDef actor fill:#e8f0fe,stroke:#3367d6,stroke-width:2px
+    class CL,AG,SU,SY actor
+```
+
+### 5.4 Module 4 — Consultation et statistiques
+
+```mermaid
+flowchart LR
+    CL["🧑 Client"]
+    AG["🧑‍💼 Agent"]
+    SU["👔 Superviseur"]
+
+    subgraph S["Consultation et statistiques"]
+        G1(["Consulter les opérations d'un compte"])
+        G2(["Filtrer par type"])
+        G3(["Filtrer par période"])
+        G4(["Rechercher une opération par référence"])
+        G5(["Calculer le total des dépôts et retraits"])
+        G6(["Afficher les graphiques"])
+        G7(["Exporter un relevé PDF"])
+        G8(["Tableau de bord de l'agence"])
+        G9(["Vérifier l'authenticité d'un reçu (par son numéro)"])
+    end
+
+    CL --- G1 & G5 & G6 & G7
+    AG --- G1 & G4 & G9
+    SU --- G8
+    G2 -. "«extend»" .-> G1
+    G3 -. "«extend»" .-> G1
+    G6 -. "«include»" .-> G5
+    G8 -. "«include»" .-> G5
+
+    classDef actor fill:#e8f0fe,stroke:#3367d6,stroke-width:2px
+    class CL,AG,SU actor
+```
+
+### 5.5 Module 5 — Administration et tâches automatiques
+
+```mermaid
+flowchart LR
+    AD["🛠️ Administrateur"]
+    SY["⏰ Système"]
+
+    subgraph S["Administration"]
+        H1(["Gérer les utilisateurs (agents, superviseurs)"])
+        H2(["Paramétrer les règles (plafonds, frais, seuil, durée des bordereaux)"])
+        H3(["Mettre à jour les taux de change"])
+        H4(["Consulter le journal d'audit"])
+        H5(["Charger les données fictives (seed)"])
+        I1(["Expirer les bordereaux (toutes les heures)"])
+        I2(["Verser les intérêts épargne (mensuel)"])
+        I3(["Prélever les frais de tenue de compte (mensuel)"])
+        I4(["Remettre à zéro les compteurs de retraits (mensuel)"])
+        I5(["Libérer les montants bloqués"])
+    end
+
+    AD --- H1 & H2 & H3 & H4 & H5
+    SY --- I1 & I2 & I3 & I4
+    I1 -. "«include»" .-> I5
+
+    classDef actor fill:#e8f0fe,stroke:#3367d6,stroke-width:2px
+    class AD,SY actor
+```
+
+---
+
+## 6. Fiches descriptives des cas principaux
+
+### UC-03 — Demander un retrait
+
+| Élément | Description |
+|---|---|
+| Acteur principal | Client |
+| Préconditions | Client authentifié · compte actif lui appartenant |
+| Scénario nominal | 1. Le client choisit un compte et saisit un montant. 2. Le système vérifie `montant > 0`. 3. Le système appelle `compte.peutRetirer(montant)` (règle propre au type de compte). 4. Le système **bloque** le montant. 5. Le système crée la demande (statut `EN_ATTENTE`, expiration +24 h). 6. Le système génère le **bordereau PDF avec un numéro unique** (`RET-K7M2-9QXB`). 7. Le client télécharge le PDF. |
+| Scénarios alternatifs | 2a. Montant ≤ 0 → `MONTANT_INVALIDE`. 3a. Règle non respectée → `SOLDE_INSUFFISANT`, `PLAFOND_DEPASSE` ou `LIMITE_RETRAITS_EPARGNE`. |
+| Postconditions | Une demande en attente existe · le montant est réservé · aucune transaction n'est encore enregistrée. |
+
+### UC-07 — Saisir le numéro et valider un bordereau
+
+| Élément | Description |
+|---|---|
+| Acteur principal | Agent bancaire (superviseur si montant > seuil) |
+| Préconditions | Agent authentifié avec le rôle `AGENT` ou `SUPERVISEUR` |
+| Scénario nominal | 1. L'agent tape le numéro du bordereau. 2. Le système vérifie la **clé de contrôle**, puis l'**existence**, l'**expiration** et le **statut** du bordereau. 3. L'interface affiche : client, n° d'identité, compte, type, montant, solde. 4. L'agent vérifie la pièce d'identité et compte les espèces. 5. L'agent clique **Accepter**. 6. Le système exécute l'opération de manière **atomique** et enregistre la transaction. 7. Le système génère le **reçu PDF**. |
+| Scénarios alternatifs | 2a. Faute de frappe → `NUMERO_INVALIDE`, l'agent corrige. 2a'. Numéro inconnu → `BORDEREAU_INTROUVABLE` + trace dans le journal. 2b. Expiré → `BORDEREAU_EXPIRE`. 2c. Déjà traité → `BORDEREAU_DEJA_TRAITE`. 4a. Identité ou espèces non conformes → **Refuser** avec motif → montant débloqué. 5a. Montant > 500 000 DA → statut `EN_ATTENTE_SUPERVISEUR`. |
+| Postconditions | Demande `VALIDEE` + transaction dans l'historique, **ou** demande `REFUSEE` + motif. Action tracée dans le journal d'audit. |
+
+### UC-09 — Effectuer un virement
+
+| Élément | Description |
+|---|---|
+| Acteur principal | Client (ou agent pour le compte d'un client) |
+| Préconditions | Compte source actif appartenant au client |
+| Scénario nominal | 1. Le client choisit le compte source, saisit le numéro du compte destinataire et le montant. 2. Le système vérifie que les comptes sont **distincts**. 3. Le système calcule les **frais** (fonction pure). 4. Si les devises sont différentes, il **convertit** le montant. 5. Il vérifie `peutRetirer(montant + frais)`. 6. **Dans une seule transaction SQL** : débit source, crédit destination, 2 lignes d'historique. 7. Il affiche le nouveau solde. |
+| Scénarios alternatifs | 2a. Même compte → `COMPTES_IDENTIQUES`. 5a. Solde insuffisant → refus, rien n'est modifié. 6a. Erreur pendant l'écriture → **ROLLBACK** : ni débit ni crédit. |
+| Postconditions | Les deux comptes sont mis à jour ensemble, ou aucun. |
+
+---
+
+## 7. Circuit Bordereau PDF à numéro unique
+
+### 7.1 Principe (sans caméra)
+
+Les PC de l'agence **n'ont pas de caméra**. La validation se fait donc avec un **numéro unique** imprimé en grand sur le PDF, que l'agent **tape au clavier**.
+
+1. Le client fait sa demande en ligne → le logiciel génère un **PDF** avec un **numéro de bordereau unique**, par exemple **`RET-K7M2-9QXB`**.
+2. Le client se présente au guichet avec le PDF (imprimé ou sur son téléphone) et sa pièce d'identité.
+3. L'agent tape le numéro dans le champ « Numéro du bordereau » et appuie sur **Entrée**.
+4. Le système affiche le détail de l'opération **lu dans la base de données** → l'agent clique **Accepter** ou **Refuser**.
+
+### 7.2 Format du numéro
+
+```
+RET - K 7 M 2 - 9 Q X A
+ │    └──────┬──────┘ │
+ │     7 caractères   └─ clé de contrôle (calculée)
+ │     aléatoires
+ └─ type : DEP (dépôt) ou RET (retrait)
+```
+
+| Règle | Pourquoi |
+|---|---|
+| **Aléatoire**, pas séquentiel (pas `0001`, `0002`…) | Impossible de deviner le numéro d'un autre client : 32⁷ ≈ **34 milliards** de combinaisons. |
+| Alphabet de 32 caractères `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` | On retire `0`, `O`, `1`, `I` qui se confondent à la lecture. |
+| **Clé de contrôle** (dernier caractère) | Calculée par une **fonction pure** (somme pondérée modulo 32). Une faute de frappe sur un caractère est détectée **tout de suite dans le navigateur**, avant d'interroger le serveur → `NUMERO_INVALIDE`. |
+| Saisie tolérante | Minuscules, espaces et tirets acceptés : `ret k7m2 9qxb` = `RET-K7M2-9QXB`. |
+| Contrainte `UNIQUE` en base | Si par hasard un numéro existe déjà, le système en génère un autre. |
+| Usage unique + expiration 24 h | Un bordereau déjà validé, refusé, annulé ou expiré ne peut plus être utilisé. |
+
+### 7.3 Pourquoi c'est sûr
+
+- **Le serveur est la seule source de vérité** : l'écran de l'agent affiche le montant, le compte et le client **lus dans la base**, pas ceux écrits sur le PDF. Si quelqu'un modifie le montant sur un PDF, l'agent voit le vrai montant à l'écran et refuse.
+- **Contrôle d'identité obligatoire** : l'écran affiche le nom et le n° d'identité du titulaire, l'agent les compare avec la pièce d'identité présentée.
+- **Seul un agent connecté** peut rechercher un bordereau, et chaque recherche est enregistrée dans le **journal d'audit**.
+- **Anti-essais** : plus de 10 numéros introuvables en 5 minutes par le même agent → alerte dans le journal d'audit.
+- **Option** : le PDF peut aussi porter un petit code-barres / QR contenant **le même numéro**. Si l'agence achète un jour une **douchette USB**, elle « tape » le numéro dans le même champ comme un clavier : aucun changement de code nécessaire.
+
+### 7.4 Contenu du bordereau PDF
+
+| Zone | Contenu |
+|---|---|
+| En-tête | Logo et nom **BankServices** · « Bordereau de demande de **retrait** » |
+| Numéro | **`RET-K7M2-9QXB`** en très gros caractères, dans un cadre |
+| Dates | Créé le 11/11/2026 10:42 · **valable jusqu'au 12/11/2026 10:42** |
+| Client | Nom et prénom · n° d'identité masqué `********4521` |
+| Compte | `BS-CC-000012` · Compte courant · DZD |
+| Montant | **12 000,00 DA** · « douze mille dinars algériens » |
+| Instructions | « Présentez ce bordereau au guichet avec votre pièce d'identité avant la date d'expiration. Communiquez le numéro à l'agent. » |
+| Pied de page | « Simulateur pédagogique — données fictives » |
+
+Après validation, un **reçu PDF** est produit : mêmes informations + statut **VALIDÉ**, nom de l'agent, date et heure, et un **numéro de reçu unique** `TRX-…` que l'on peut vérifier dans le système.
+
+### 7.5 Maquette de l'écran de l'agent
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Guichet — Vérification d'un bordereau                       │
+│                                                              │
+│  Numéro du bordereau : [ RET-K7M2-9QXB         ] [Rechercher]│
+│                                                              │
+│  ✔ Numéro valide   ✔ Non expiré (reste 21 h)   ✔ En attente  │
+│ ──────────────────────────────────────────────────────────── │
+│  Opération : RETRAIT                                         │
+│  Montant   : 12 000,00 DA                                    │
+│  Client    : Amine BENALI   ·  N° identité : 1098 7654 4521  │
+│  Compte    : BS-CC-000012 (Courant, DZD)                     │
+│  Solde     : 50 000,00 DA  →  après opération : 38 000,00 DA │
+│                                                              │
+│  ☐ J'ai vérifié la pièce d'identité du client                │
+│                                                              │
+│        [ ✔ Accepter ]          [ ✖ Refuser — motif… ]        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Le bouton **Accepter** reste désactivé tant que la case « pièce d'identité vérifiée » n'est pas cochée (événement `onChange`).
+
+### 7.6 Séquence — Dépôt avec bordereau
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor CL as Client
+    participant UI as Front React
+    participant API as API FastAPI
+    participant DB as SQLite
+    actor AG as Agent (guichet)
+
+    CL->>UI: Choisit un compte et saisit le montant
+    UI->>API: POST /api/demandes (type DEPOT, compte, montant)
+    API->>API: verifierMontant(montant) strictement positif
+    API->>API: genererNumero() donne DEP-H4TW-82NC
+    API->>DB: INSERT demande (EN_ATTENTE, expiration +24h)
+    API-->>UI: 201 Created (numéro)
+    UI->>API: GET /api/demandes/DEP-H4TW-82NC/bordereau.pdf
+    API-->>UI: PDF avec le numéro en gros
+    UI-->>CL: Téléchargement du bordereau
+
+    Note over CL,AG: Le client se rend à l'agence avec le PDF, sa pièce d'identité et les espèces
+
+    AG->>UI: Tape DEP-H4TW-82NC puis Entrée
+    UI->>UI: verifierCleControle(numéro) dans le navigateur
+    alt Faute de frappe
+        UI-->>AG: NUMERO_INVALIDE, vérifiez les caractères
+    else Clé correcte
+        UI->>API: GET /api/agent/bordereaux/DEP-H4TW-82NC
+        API->>DB: SELECT demande, client, compte
+        API->>DB: INSERT journal_audit (RECHERCHE)
+        API-->>UI: Détails de l'opération (ou introuvable, expiré, déjà traité)
+        UI-->>AG: Écran Accepter / Refuser
+    end
+
+    alt Identité et espèces conformes
+        AG->>UI: Coche « identité vérifiée » puis Accepter
+        UI->>API: POST /api/agent/bordereaux/DEP-H4TW-82NC/valider
+        API->>DB: BEGIN
+        API->>DB: UPDATE compte SET solde = solde + montant
+        API->>DB: INSERT transaction (DEPOT)
+        API->>DB: UPDATE demande SET statut = VALIDEE
+        API->>DB: COMMIT
+        API-->>UI: Succès + reçu PDF
+        UI-->>AG: Message vert, nouveau solde affiché
+    else Non conforme
+        AG->>UI: Clique Refuser et saisit le motif
+        UI->>API: POST /api/agent/bordereaux/DEP-H4TW-82NC/refuser
+        API->>DB: UPDATE demande SET statut = REFUSEE
+        API-->>UI: Refus enregistré
+    end
+```
+
+### 7.7 Séquence — Retrait avec bordereau (montant bloqué)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor CL as Client
+    participant API as API FastAPI
+    participant CPT as Compte (objet métier)
+    participant DB as SQLite
+    actor AG as Agent
+    actor SU as Superviseur
+
+    CL->>API: POST /api/demandes (type RETRAIT, compte, 12 000 DA)
+    API->>CPT: peutRetirer(12 000)
+    Note right of CPT: Règle polymorphe selon le type<br/>Courant : découvert et plafond jour<br/>Épargne : solde minimum et 2 retraits par mois<br/>Devise : solde et plafond jour
+    alt Règle non respectée
+        CPT-->>API: false
+        API-->>CL: 422 SOLDE_INSUFFISANT (message clair)
+    else Règle respectée
+        CPT-->>API: true
+        API->>DB: UPDATE compte SET montant_bloque = montant_bloque + 12 000
+        API->>DB: INSERT demande RET-K7M2-9QXB (EN_ATTENTE)
+        API-->>CL: Bordereau PDF avec numéro unique
+    end
+
+    AG->>API: Saisit RET-K7M2-9QXB puis Accepter
+    alt Montant supérieur au seuil de 500 000 DA
+        API->>DB: UPDATE demande SET statut = EN_ATTENTE_SUPERVISEUR
+        SU->>API: Approuve
+    end
+    API->>DB: BEGIN
+    API->>DB: solde = solde - 12 000 et montant_bloque = montant_bloque - 12 000
+    API->>DB: INSERT transaction (RETRAIT)
+    API->>DB: UPDATE demande SET statut = VALIDEE
+    API->>DB: COMMIT
+    API-->>AG: Reçu PDF, remise des espèces au client
+```
+
+### 7.8 Cycle de vie d'une demande (diagramme d'états)
+
+```mermaid
+stateDiagram-v2
+    [*] --> EN_ATTENTE : le client crée la demande
+    EN_ATTENTE --> VALIDEE : agent accepte (montant sous le seuil)
+    EN_ATTENTE --> EN_ATTENTE_SUPERVISEUR : agent accepte (montant au-dessus du seuil)
+    EN_ATTENTE --> REFUSEE : agent refuse (motif)
+    EN_ATTENTE --> ANNULEE : le client annule
+    EN_ATTENTE --> EXPIREE : 24 h écoulées (tâche système)
+    EN_ATTENTE_SUPERVISEUR --> VALIDEE : superviseur approuve
+    EN_ATTENTE_SUPERVISEUR --> REFUSEE : superviseur rejette
+    VALIDEE --> [*]
+    REFUSEE --> [*]
+    ANNULEE --> [*]
+    EXPIREE --> [*]
+
+    note right of EN_ATTENTE
+        Retrait : le montant est bloqué.
+        Il est libéré si la demande devient
+        REFUSEE, ANNULEE ou EXPIREE.
+    end note
+```
+
+### 7.9 Activité — Traitement d'un bordereau par l'agent
+
+```mermaid
+flowchart TD
+    A([L'agent tape le numéro du bordereau]) --> B{Clé de contrôle correcte ?}
+    B -- Non --> B1[/NUMERO_INVALIDE : corriger la saisie/] --> A
+    B -- Oui --> C{Bordereau trouvé ?}
+    C -- Non --> C0[/BORDEREAU_INTROUVABLE + journal d'audit/] --> Z([Fin])
+    C -- Oui --> C3{Statut EN_ATTENTE ?}
+    C3 -- "Déjà traité" --> C1[/BORDEREAU_DEJA_TRAITE/] --> Z
+    C3 -- "Expiré" --> C2[/BORDEREAU_EXPIRE/] --> Z
+    C3 -- Oui --> D[Afficher client, compte, montant, solde lus en base]
+    D --> E{Pièce d'identité conforme ?}
+    E -- Non --> R[Refuser avec motif]
+    E -- Oui --> F{Type d'opération}
+    F -- Dépôt --> G{Espèces comptées = montant ?}
+    G -- Non --> R
+    G -- Oui --> H
+    F -- Retrait --> H{Montant > 500 000 DA ?}
+    H -- Oui --> S[Transmettre au superviseur] --> S1{Approuvé ?}
+    S1 -- Non --> R
+    S1 -- Oui --> X
+    H -- Non --> X[Exécuter la transaction atomique]
+    X --> Y[Générer le reçu PDF] --> Y1[Encaisser ou remettre les espèces] --> Z
+    R --> R1[Libérer le montant bloqué si retrait] --> Z
+```
+
+---
+
+## 8. Virement atomique (avec conversion de devise)
+
+Exemple : virement de 300 EUR depuis `BS-CD-000003` (EUR) vers `BS-CC-000012` (DZD) au taux fictif 1 EUR = 150 DZD.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor CL as Client
+    participant API as API FastAPI
+    participant BQ as Banque (service)
+    participant F as Fonctions pures
+    participant DB as SQLite
+
+    CL->>API: POST /api/virements (source, destination, 300 EUR)
+    API->>BQ: virement(source, destination, 300)
+    BQ->>BQ: source différent de destination ?
+    BQ->>F: calculerFrais(VIREMENT, 300, DEVISE)
+    F-->>BQ: 3,00 EUR
+    BQ->>F: convertir(300, EUR vers DZD, taux 150)
+    F-->>BQ: 45 000,00 DZD
+    BQ->>BQ: source.peutRetirer(303,00)
+    alt Refusé
+        BQ-->>API: SOLDE_INSUFFISANT
+        API-->>CL: 422 avec message clair
+    else Accepté
+        BQ->>DB: BEGIN
+        BQ->>DB: Débit source de 303,00 EUR
+        BQ->>DB: Crédit destination de 45 000,00 DZD
+        BQ->>DB: INSERT transaction VIREMENT_EMIS + FRAIS
+        BQ->>DB: INSERT transaction VIREMENT_RECU
+        alt Erreur pendant l'écriture
+            BQ->>DB: ROLLBACK (rien n'est modifié)
+            API-->>CL: 500 opération annulée
+        else Tout est OK
+            BQ->>DB: COMMIT
+            API-->>CL: 201 nouveau solde
+        end
+    end
+```
+
+---
+
+## 9. Diagramme de classes
+
+```mermaid
+classDiagram
+    direction TB
+
+    class Banque {
+        -nom: str
+        -clients: list~Client~
+        -taux: TauxChange
+        +ajouterClient(client) Client
+        +rechercherClients(terme) list~Client~
+        +ouvrirCompte(client, type, devise) CompteBancaire
+        +trouverCompte(numero) CompteBancaire
+        +virement(source, destination, montant) list~Transaction~
+    }
+
+    class Client {
+        -id: int
+        -nom: str
+        -prenom: str
+        -numero_identite: str
+        -telephone: str
+        -email: str
+        -adresse: str
+        -date_creation: datetime
+        -comptes: list~CompteBancaire~
+        +ajouterCompte(compte)
+        +comptesParType(type) list~CompteBancaire~
+        +soldeTotalEnDZD(taux) Decimal
+    }
+
+    class CompteBancaire {
+        <<abstract>>
+        #numero: str
+        #devise: Devise
+        #solde: Decimal
+        #montant_bloque: Decimal
+        #statut: StatutCompte
+        #date_ouverture: date
+        #transactions: list~Transaction~
+        +soldeDisponible() Decimal
+        +deposer(montant) Transaction
+        +retirer(montant) Transaction
+        +bloquer(montant)
+        +liberer(montant)
+        +peutRetirer(montant)* bool
+        +calculerFrais(type, montant)* Decimal
+    }
+
+    class CompteCourant {
+        -decouvert_autorise: Decimal
+        -plafond_retrait_jour: Decimal
+        +peutRetirer(montant) bool
+        +calculerFrais(type, montant) Decimal
+        +fraisTenueCompte() Decimal
+    }
+
+    class CompteEpargne {
+        -taux_interet_annuel: Decimal
+        -solde_minimum: Decimal
+        -retraits_max_mois: int
+        -retraits_ce_mois: int
+        +peutRetirer(montant) bool
+        +calculerFrais(type, montant) Decimal
+        +calculerInteretsMensuels() Decimal
+    }
+
+    class CompteDevise {
+        -plafond_retrait_jour: Decimal
+        +peutRetirer(montant) bool
+        +calculerFrais(type, montant) Decimal
+    }
+
+    class Transaction {
+        -id: int
+        -reference: str
+        -type: TypeOperation
+        -montant: Decimal
+        -devise: Devise
+        -frais: Decimal
+        -solde_apres: Decimal
+        -date: datetime
+        -compte_contrepartie: str
+        -agent_id: int
+    }
+
+    class DemandeOperation {
+        -reference: str
+        -type: TypeOperation
+        -montant: Decimal
+        -statut: StatutDemande
+        -numero_bordereau: str
+        -date_creation: datetime
+        -date_expiration: datetime
+        -motif_refus: str
+        +estExpiree(maintenant) bool
+        +valider(agent) Transaction
+        +refuser(agent, motif)
+        +annuler()
+    }
+
+    class Utilisateur {
+        -id: int
+        -login: str
+        -mot_de_passe_hash: str
+        -role: Role
+        -statut_acces: StatutAcces
+        -doit_changer_mdp: bool
+        -tentatives_echouees: int
+        -expiration_mdp_temporaire: datetime
+        +verifierMotDePasse(mdp) bool
+        +changerMotDePasse(ancien, nouveau)
+        +reinitialiser() str
+        +peutValider(montant, seuil) bool
+    }
+
+    class TauxChange {
+        -taux: dict
+        -date_maj: datetime
+        +convertir(montant, source, cible) Decimal
+    }
+
+    class GenerateurNumero {
+        -alphabet: str
+        +genererNumero(type) str
+        +cleControle(corps) str
+        +estValide(numero) bool
+        +normaliser(saisie) str
+    }
+
+    class GenerateurPDF {
+        +bordereau(demande) bytes
+        +recu(transaction) bytes
+        +releve(compte, debut, fin) bytes
+    }
+
+    class Devise {
+        <<enumeration>>
+        DZD
+        EUR
+        USD
+    }
+    class TypeOperation {
+        <<enumeration>>
+        DEPOT
+        RETRAIT
+        VIREMENT_EMIS
+        VIREMENT_RECU
+        FRAIS
+        INTERETS
+    }
+    class StatutDemande {
+        <<enumeration>>
+        EN_ATTENTE
+        EN_ATTENTE_SUPERVISEUR
+        VALIDEE
+        REFUSEE
+        ANNULEE
+        EXPIREE
+    }
+    class StatutAcces {
+        <<enumeration>>
+        TEMPORAIRE
+        ACTIF
+        VERROUILLE
+        EXPIRE
+        DESACTIVE
+    }
+    class Role {
+        <<enumeration>>
+        CLIENT
+        AGENT
+        SUPERVISEUR
+        ADMIN
+    }
+
+    CompteBancaire <|-- CompteCourant
+    CompteBancaire <|-- CompteEpargne
+    CompteBancaire <|-- CompteDevise
+    Banque "1" *-- "*" Client : gère
+    Banque "1" --> "1" TauxChange : utilise
+    Client "1" o-- "1..*" CompteBancaire : possède
+    CompteBancaire "1" *-- "*" Transaction : historique
+    CompteBancaire "1" -- "*" DemandeOperation : concerne
+    DemandeOperation "0..1" --> "0..1" Transaction : produit
+    Utilisateur "1" -- "*" DemandeOperation : traite
+    Client "1" -- "0..1" Utilisateur : accès en ligne
+    DemandeOperation ..> GenerateurNumero : numéro unique
+    DemandeOperation ..> GenerateurPDF : bordereau
+```
+
+---
+
+## 10. Modèle de données
+
+Héritage stocké en **une seule table** `compte` avec une colonne `type_compte` (les colonnes propres à un type restent `NULL` pour les autres).
+
+```mermaid
+erDiagram
+    CLIENT ||--o{ COMPTE : possede
+    CLIENT ||--o| UTILISATEUR : "se connecte via"
+    COMPTE ||--o{ TRANSACTION : enregistre
+    COMPTE ||--o{ DEMANDE_OPERATION : concerne
+    UTILISATEUR ||--o{ DEMANDE_OPERATION : traite
+    DEMANDE_OPERATION |o--o| TRANSACTION : produit
+    UTILISATEUR ||--o{ JOURNAL_AUDIT : genere
+
+    CLIENT {
+        int id PK
+        string numero_identite UK
+        string nom
+        string prenom
+        string telephone
+        string email
+        string adresse
+        datetime date_creation
+    }
+    COMPTE {
+        int id PK
+        string numero UK "BS-CC-000012"
+        int client_id FK
+        string type_compte "COURANT, EPARGNE, DEVISE"
+        string devise "DZD, EUR, USD"
+        int solde "en centimes"
+        int montant_bloque "en centimes"
+        decimal decouvert_autorise "courant seulement"
+        decimal taux_interet "epargne seulement"
+        int retraits_ce_mois "epargne seulement"
+        string statut "ACTIF, BLOQUE, CLOTURE"
+        date date_ouverture
+    }
+    TRANSACTION {
+        int id PK
+        string reference UK "TRX-..."
+        int compte_id FK
+        string type "DEPOT, RETRAIT, VIREMENT_EMIS..."
+        decimal montant
+        decimal frais
+        decimal solde_apres
+        string compte_contrepartie
+        int agent_id FK
+        datetime date
+    }
+    DEMANDE_OPERATION {
+        int id PK
+        int compte_id FK
+        string type "DEPOT, RETRAIT"
+        decimal montant
+        string statut
+        string numero_bordereau UK "RET-K7M2-9QXB"
+        datetime date_creation
+        datetime date_expiration
+        int agent_id FK
+        int transaction_id FK
+        string motif_refus
+    }
+    UTILISATEUR {
+        int id PK
+        string login UK "amine.benali"
+        string mot_de_passe_hash "bcrypt"
+        string role "CLIENT, AGENT, SUPERVISEUR, ADMIN"
+        int client_id FK "si role CLIENT"
+        string statut_acces "TEMPORAIRE, ACTIF, VERROUILLE..."
+        bool doit_changer_mdp
+        int tentatives_echouees
+        datetime expiration_mdp_temporaire
+        datetime derniere_connexion
+    }
+    TAUX_CHANGE {
+        string devise PK
+        decimal taux_vers_dzd
+        datetime date_maj
+    }
+    PARAMETRE {
+        string cle PK
+        string valeur
+    }
+    JOURNAL_AUDIT {
+        int id PK
+        int utilisateur_id FK
+        string action "SCAN, VALIDER, REFUSER..."
+        string cible
+        string details
+        datetime date
+    }
+```
+
+Exemple de requête **déclarative** (statistiques d'un compte) :
+
+```sql
+SELECT type,
+       COUNT(*)      AS nombre,
+       SUM(montant)  AS total
+FROM   transaction
+WHERE  compte_id = :compte_id
+  AND  date BETWEEN :debut AND :fin
+GROUP  BY type
+ORDER  BY total DESC;
+```
+
+---
+
+## 11. Architecture technique
+
+```mermaid
+flowchart LR
+    subgraph NAV["Navigateur — React (Vite)"]
+        EC["Espace Client"]
+        EA["Espace Agent<br/>saisie du numéro de bordereau"]
+        EAD["Espace Admin"]
+        UT["utils/stats.js<br/>filter · map · reduce"]
+    end
+
+    subgraph API["Serveur — FastAPI (Python)"]
+        RT["routers/<br/>clients · comptes · demandes · agent · stats · admin"]
+        SV["services/procedures.py<br/>calculerSolde, effectuerDepot..."]
+        DM["domain/<br/>Client, CompteBancaire, Banque..."]
+        RL["rules/imperative.py<br/>boucles et conditions"]
+        FN["functional/<br/>frais, conversion, stats"]
+        PQ["pdf/<br/>reportlab + numéro unique"]
+        SC["security/<br/>JWT + rôles"]
+        JB["jobs/<br/>expiration, intérêts, frais"]
+    end
+
+    DB[("SQLite<br/>bankservices.db")]
+
+    EC & EA & EAD -- "HTTP JSON" --> RT
+    RT --> SC
+    RT --> SV --> DM
+    SV --> RL
+    SV --> FN
+    RT --> PQ
+    DM -- "SQLAlchemy" --> DB
+    JB --> DB
+```
+
+### 11.1 Bibliothèques
+
+| Côté | Bibliothèque | Usage |
+|---|---|---|
+| Backend | `fastapi`, `uvicorn` | API REST + documentation Swagger automatique (`/docs`) |
+| Backend | `sqlalchemy`, `pydantic` | Accès base de données, validation des entrées |
+| Backend | `reportlab` | Génération des PDF (bordereau, reçu, relevé) |
+| Backend | `secrets` (standard) | Numéros de bordereau aléatoires, mots de passe temporaires |
+| Backend | `python-jose`, `passlib[bcrypt]` | Authentification JWT, mots de passe hachés |
+| Backend | `pytest`, `httpx` | Tests unitaires et tests d'API |
+| Frontend | `react`, `react-router-dom` | Interface et navigation |
+| Frontend | `recharts` | Graphiques statistiques |
+| Frontend | `vitest`, `@testing-library/react` | Tests des fonctions et composants |
+
+### 11.2 Arborescence du dépôt
+
+```
+Banque_system/
+├── README.md
+├── docs/
+│   ├── ETUDE_SYSTEME.md        ← ce document
+│   └── rapport/                 ← rapport final (5 à 8 pages)
+├── backend/
+│   ├── app/
+│   │   ├── main.py
+│   │   ├── database.py
+│   │   ├── domain/              ← POO : classes métier
+│   │   ├── rules/               ← Impératif
+│   │   ├── services/            ← Procédural
+│   │   ├── functional/          ← Fonctionnel
+│   │   ├── pdf/                 ← PDF (bordereau, reçu, relevé, fiche identifiants)
+│   │   ├── routers/             ← Endpoints REST
+│   │   ├── security/
+│   │   ├── jobs/
+│   │   └── seed.py              ← Données fictives
+│   ├── tests/
+│   └── requirements.txt
+└── frontend/
+    ├── src/
+    │   ├── pages/               ← client/, agent/, admin/
+    │   ├── components/          ← Déclaratif (JSX)
+    │   ├── utils/               ← Fonctionnel
+    │   └── api/
+    └── package.json
+```
+
+---
+
+## 12. API REST
+
+| Méthode | URL | Rôle | Description |
+|---|---|---|---|
+| POST | `/api/auth/connexion` | Tous | Connexion, renvoie un jeton JWT (limité si `doit_changer_mdp`) |
+| POST | `/api/auth/changer-mot-de-passe` | Tous | Choisir / changer son mot de passe |
+| GET | `/api/auth/moi` | Tous | Utilisateur connecté |
+| GET | `/api/clients?q=` | Agent | Liste et recherche des clients |
+| POST | `/api/clients` | Agent | Ajouter un client (renvoie les identifiants générés) |
+| GET / PUT | `/api/clients/{id}` | Agent | Consulter / modifier une fiche |
+| POST | `/api/clients/{id}/comptes` | Agent | Ouvrir un compte (courant, épargne, devise) |
+| POST | `/api/clients/{id}/reinitialiser-acces` | Agent | Nouveau mot de passe temporaire |
+| POST | `/api/clients/{id}/fiche-identifiants.pdf` | Agent | Fiche de remise des identifiants |
+| GET / PUT | `/api/moi/profil` | Client | Son profil / ses coordonnées |
+| GET | `/api/moi/comptes` | Client | Ses comptes |
+| POST / GET | `/api/moi/demandes` | Client | Créer / suivre ses demandes de dépôt et retrait |
+| GET | `/api/moi/demandes/{numero}/bordereau.pdf` | Client | Télécharger le bordereau |
+| DELETE | `/api/moi/demandes/{numero}` | Client | Annuler une demande |
+| POST | `/api/moi/virements` | Client | Virement depuis un de ses comptes |
+| GET | `/api/comptes/{numero}` | Client, Agent | Informations et solde d'un compte |
+| GET | `/api/comptes/{numero}/transactions?type=&debut=&fin=` | Client, Agent | Historique filtré |
+| GET | `/api/comptes/{numero}/statistiques` | Client, Agent | Totaux (fonctionnel) et agrégats SQL (déclaratif) |
+| GET | `/api/comptes/{numero}/releve.pdf` | Client, Agent | Relevé PDF |
+| PATCH | `/api/comptes/{numero}/statut` | Superviseur | Bloquer / clôturer |
+| PATCH | `/api/comptes/{numero}/decouvert` | Superviseur | Modifier le découvert autorisé |
+| GET | `/api/transactions/{reference}` · `/recu.pdf` | Client, Agent | Vérifier un reçu / le télécharger |
+| POST | `/api/virements` | Agent | Virement pour le compte d'un client |
+| GET | `/api/agent/bordereaux/{numero}` | Agent | Rechercher un bordereau par son numéro |
+| POST | `/api/agent/bordereaux/{numero}/valider` | Agent, Superviseur | Accepter |
+| POST | `/api/agent/bordereaux/{numero}/refuser` | Agent, Superviseur | Refuser avec motif |
+| POST | `/api/agent/operations` | Agent | Opération directe au guichet |
+| GET | `/api/superviseur/demandes` | Superviseur | Opérations en attente d'approbation |
+| GET | `/api/superviseur/tableau-de-bord` | Superviseur | Activité du jour |
+| GET / PUT | `/api/admin/parametres[/{cle}]` | Admin | Seuil, durée des bordereaux et des mots de passe temporaires |
+| GET / PUT | `/api/admin/taux-change[/{devise}]` | Admin | Taux de change |
+| GET / POST | `/api/admin/utilisateurs` | Admin | Gestion des agents et superviseurs |
+| POST / PATCH | `/api/admin/utilisateurs/{id}/reinitialiser` · `/statut` | Admin | Réinitialiser / activer / désactiver |
+| GET | `/api/admin/audit` | Admin | Journal d'audit |
+| POST | `/api/admin/taches/{nom}` | Admin | Tâches système : `expirer-bordereaux`, `verser-interets`, `frais-tenue-compte` |
+
+---
+
+## 13. Écrans de l'interface
+
+| Espace | Écran | Contenu principal |
+|---|---|---|
+| Commun | Connexion | Nom d'utilisateur, mot de passe, redirection selon le rôle |
+| Commun | Choisir mon mot de passe | Affiché obligatoirement à la 1re connexion : nouveau mot de passe + confirmation, indicateur de robustesse en direct |
+| Client | Tableau de bord | Cartes des comptes (type, devise, solde, solde disponible), graphique d'évolution |
+| Client | Détail d'un compte | Tableau de l'historique, filtres par type et date, totaux, export PDF |
+| Client | Nouvelle demande | Formulaire dépôt / retrait → message de succès ou d'erreur → bouton « Télécharger le bordereau » |
+| Client | Mes demandes | Liste avec badge de statut (en attente, validée, refusée, expirée), bouton Annuler |
+| Client | Virement | Compte source, compte destinataire, montant, aperçu des frais et de la conversion |
+| Agent | Vérification d'un bordereau | Champ « Numéro du bordereau » (vérification de la clé en direct), voir maquette §7.5 |
+| Agent | Détail d'une demande | Fiche client, compte, montant en grand, contrôles (numéro valide, non expiré, en attente), case « identité vérifiée », boutons **Accepter** / **Refuser** |
+| Agent | Clients | Tableau, barre de recherche, bouton « Ajouter » → identifiants affichés + fiche PDF à imprimer, fiche client avec ses comptes, bouton « Réinitialiser l'accès » |
+| Agent | Opération au guichet | Dépôt / retrait direct pour un client sans bordereau |
+| Superviseur | À approuver | Opérations au-dessus du seuil, Approuver / Rejeter |
+| Superviseur | Tableau de bord | Volume du jour, dépôts vs retraits, demandes en attente |
+| Admin | Utilisateurs, Paramètres, Taux de change, Journal d'audit | Formulaires et tableaux |
+
+---
+
+## 14. Correspondance avec les paradigmes
+
+Tableau à reprendre dans le rapport (section 8 du sujet) :
+
+| Paradigme | Fonctionnalité réalisée | Fichier / classe / fonction | Justification |
+|---|---|---|---|
+| **Impératif** | Calcul du solde, validation d'un retrait, totaux par boucle | `backend/app/rules/imperative.py` : `calculer_nouveau_solde()`, `totaux_par_boucle()` | Variables modifiées pas à pas, `if/else` pour accepter ou refuser, `for` pour parcourir les opérations : on décrit **comment** calculer. |
+| **Procédural** | Les 5 fonctions demandées | `backend/app/services/procedures.py` : `calculerSolde()`, `verifierMontant()`, `effectuerDepot()`, `effectuerRetrait()`, `calculerTotalOperations()` | Problème découpé en fonctions réutilisables, paramètres clairs, résultat exploitable, testables une par une. |
+| **Orienté objet** | Clients, comptes, transactions, banque, demandes | `backend/app/domain/` : `CompteBancaire` (abstraite) → `CompteCourant`, `CompteEpargne`, `CompteDevise` | Encapsulation du solde, héritage, **polymorphisme** de `peutRetirer()` et `calculerFrais()`. |
+| **Fonctionnel** | Filtrer, transformer, cumuler les opérations, frais, conversion | `frontend/src/utils/stats.js` et `montants.js` (`filter`, `map`, `reduce`), `backend/app/functional/` : `calculer_frais()`, `convertir()`, `cle_controle()` | Fonctions **pures** : mêmes entrées → même résultat, aucune modification des données d'entrée, faciles à tester. |
+| **Déclaratif** | Interface React, statistiques SQL | `frontend/src/components/Interface.jsx` (`Tableau` décrit par ses colonnes), `backend/app/services/statistiques.py` (`SELECT … GROUP BY`) | On décrit **ce que** l'on veut afficher ou obtenir, React et le SGBD choisissent comment le faire. |
+| **Événementiel** | Bouton « Déposer », soumission, saisie du numéro de bordereau, robustesse du mot de passe, filtres, messages | `frontend/src/pages/agent/Guichet.jsx`, `ChangerMotDePasse.jsx`, `DetailCompte.jsx` : `onClick`, `onSubmit`, `onChange`, `onKeyDown` (Entrée) ; `auth/Session.jsx` : événement `session-expiree` | L'application réagit aux actions de l'utilisateur (clic, saisie, touche) au lieu de suivre un ordre fixe. |
+
+---
+
+## 15. Couverture des exigences du sujet
+
+| Exigence du sujet | Où elle est couverte |
+|---|---|
+| Module 1 — Ajouter, modifier, consulter, rechercher, lister les clients | §5.1 · écrans Agent → Clients |
+| Module 2 — Créer, associer, consulter, distinguer les comptes | §3, §5.2 · courant / épargne / **devise** |
+| Module 3 — Dépôt, retrait, virement, vérification du solde, historique | §5.3, §7, §8 |
+| Module 4 — Consulter, filtrer, totaux, graphiques | §5.4 · Recharts + SQL |
+| C1 — Plusieurs comptes par client | `Client 1 —— 1..* CompteBancaire` |
+| C2 — Identifiant unique | `compte.numero` `UNIQUE` (`BS-CC-000012`) |
+| C3 — Dépôt strictement positif | `verifierMontant()` |
+| C4 — Retrait ≤ solde, sauf découvert | `peutRetirer()` polymorphe (§3.1) |
+| C5 — Virement entre deux comptes distincts | `COMPTES_IDENTIQUES` |
+| C6 — Virement atomique | `BEGIN … COMMIT / ROLLBACK` (§8) |
+| C7 — Historique de chaque opération validée | Table `transaction` |
+| C8 — Précision décimale | `Decimal` + montants en centimes entiers (`app/database.py`, type `Montant`) |
+| C9 — Messages d'erreur compréhensibles | Catalogue §3.4 |
+| Livrables — README, diagramme de classes, données fictives, tests, rapport | `README.md`, §9, `seed.py`, `backend/tests`, `docs/rapport` |
+
+---
+
+## 16. Plan de réalisation
+
+```mermaid
+gantt
+    title Planning jusqu'au 28/11/2026
+    dateFormat YYYY-MM-DD
+    axisFormat %d/%m
+    section Séance 1 — Analyse
+    Étude et diagrammes                :done, s1, 2026-11-11, 2d
+    section Séance 2 — Règles métier
+    Domaine POO + règles impératives    :s2a, 2026-11-13, 3d
+    Procédures + fonctions pures        :s2b, after s2a, 2d
+    Tests Pytest                        :s2c, after s2a, 3d
+    section Séance 3 — Application Web
+    API FastAPI + base SQLite           :s3a, 2026-11-18, 3d
+    PDF + numéro unique + écran agent   :s3b, after s3a, 2d
+    Interface React                     :s3c, 2026-11-18, 5d
+    section Séance 4 — Intégration
+    Intégration et tests Vitest         :s4a, 2026-11-23, 2d
+    Rapport et captures                 :s4b, 2026-11-24, 3d
+    Répétition de la démo               :s4c, 2026-11-27, 1d
+```
+
+---
+
+## 17. Points à valider par le groupe
+
+1. **Valeurs fictives** : découvert 20 000 DA, plafond 200 000 DA / jour, seuil superviseur 500 000 DA, validité des bordereaux 24 h, mot de passe temporaire 7 jours — à garder ou changer ?
+2. **Devises** : seulement EUR et USD, ou ajouter d'autres ?
+3. **Comptes autorisés par client** : plusieurs courants, un seul épargne, un compte devise par devise — d'accord ?
+4. **Format du nom d'utilisateur** : `prenom.nom` (proposé) ou un identifiant numérique (ex. `100245`) ?
+
+Décisions déjà prises :
+
+- ✅ Chaque client reçoit un **nom d'utilisateur et un mot de passe temporaire générés par le système**, et doit **choisir son mot de passe à la première connexion** (§3.5).
+- ✅ **Pas de caméra** : chaque bordereau a un **numéro unique** que l'agent saisit au clavier (§7).

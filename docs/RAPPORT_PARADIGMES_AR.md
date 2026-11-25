@@ -1,0 +1,388 @@
+# BankServices — تقرير شرح: أنماط البرمجة في مشروعنا
+
+> هذا التقرير هو **النسخة الشارحة بالعربية** للتقرير الأساسي بالفرنسية `RAPPORT_PARADIGMES.md`.
+> الهدف منه أن تفهم كل نمط برمجة (paradigme) بكلمات بسيطة، وأين يوجد في مشروعنا بالضبط، ولماذا اخترناه، حتى تستطيع شرحه أمام الأستاذ.
+> المشروع: الواجهة الخلفية **Python · FastAPI · SQLAlchemy · SQLite** — الواجهة الأمامية **React 19 · Vite** — كل البيانات وهمية.
+
+## الفهرس
+
+1. [ما هو نمط البرمجة؟](#1-ما-هو-نمط-البرمجة)
+2. [الأنماط الستة في جدول واحد](#2-الأنماط-الستة-في-جدول-واحد)
+3. [أين يوجد كل نمط في ملفات المشروع](#3-أين-يوجد-كل-نمط-في-ملفات-المشروع)
+4. [شرح كل نمط بالتفصيل](#4-شرح-كل-نمط-بالتفصيل)
+5. [نفس الحساب بثلاث طرق مختلفة](#5-نفس-الحساب-بثلاث-طرق-مختلفة)
+6. [عملية سحب واحدة تمر عبر الأنماط الستة](#6-عملية-سحب-واحدة-تمر-عبر-الأنماط-الستة)
+7. [الاختبارات التي تثبت كل نمط](#7-الاختبارات-التي-تثبت-كل-نمط)
+8. [ملخص للحفظ](#8-ملخص-للحفظ)
+
+---
+
+## 1. ما هو نمط البرمجة؟
+
+نمط البرمجة (**paradigme de programmation**) هو **طريقة تفكير** نستعملها لحل مشكلة بالكود. نفس المشكلة يمكن حلها بعدة طرق:
+
+- يمكن أن نعطي للحاسوب **الخطوات واحدة بواحدة** (هذا هو الأمري).
+- أو نقسّم العمل إلى **دوال صغيرة** (هذا هو الإجرائي).
+- أو ننظّم البرنامج حول **كائنات** تشبه أشياء حقيقية (هذا هو الكائني).
+- أو نستعمل **دوال رياضية نقية** (هذا هو الوظيفي).
+- أو نصف **النتيجة المطلوبة** فقط (هذا هو التصريحي).
+- أو نجعل البرنامج **ينتظر الأحداث** ويرد عليها (هذا هو الحدثي).
+
+**تشبيه بسيط:** لتحضير قهوة، يمكنك أن تشرح لصديقك كل حركة (خذ الكأس، ضع الماء، شغّل الآلة…): هذا **أمري**. أو تقول له فقط «أريد قهوة بالحليب» وهو يتصرف: هذا **تصريحي**.
+
+موضوع الأعمال التطبيقية (TP) يطلب أن نستعمل **عدة أنماط في نفس التطبيق**، وأن نبرر أين ولماذا. في مشروعنا، كل نمط وُضع في المكان الذي يناسبه أكثر، وليس فقط «لملء الخانة».
+
+---
+
+## 2. الأنماط الستة في جدول واحد
+
+| النمط | بالفرنسية | الفكرة في جملة | أين في مشروعنا |
+|---|---|---|---|
+| **الأمري** | Impératif | نقول للحاسوب **كيف** يعمل، خطوة بخطوة، بمتغيرات تتغير و`if` و`for`. | `backend/app/rules/imperative.py` |
+| **الإجرائي** | Procédural | نقسّم المشكلة إلى **دوال** لكل واحدة مدخلات واضحة ونتيجة. | `backend/app/services/procedures.py` |
+| **الكائني** | Orienté objet (POO) | **كائنات** تجمع البيانات والسلوك: تغليف، وراثة، تعدد أشكال. | `backend/app/domain/` و`services/banque.py` |
+| **الوظيفي** | Fonctionnel | **دوال نقية**: نفس المدخل يعطي دائما نفس النتيجة، ولا شيء يتغير خارجها. | `backend/app/functional/` و`frontend/src/utils/` |
+| **التصريحي** | Déclaratif | نصف **ماذا** نريد، والمحرك يقرر كيف. | SQL، مكوّنات React، CSS، Pydantic |
+| **الحدثي** | Événementiel | البرنامج **ينتظر حدثا** (نقرة، كتابة، طلب) ثم يرد عليه. | صفحات React، `Session.jsx`، مسارات FastAPI |
+
+---
+
+## 3. أين يوجد كل نمط في ملفات المشروع
+
+### 3.1 الواجهة الخلفية (backend — FastAPI)
+
+| المجلد أو الملف | النمط | ماذا يفعل |
+|---|---|---|
+| `app/domain/comptes.py` | كائني | الصنف المجرد `CompteBancaire` وأبناؤه الثلاثة: الحساب الجاري، حساب التوفير، حساب العملة الصعبة |
+| `app/domain/client.py`, `operations.py`, `utilisateur.py` | كائني | الزبون، العملية، القسيمة (bordereau)، المستخدم |
+| `app/rules/imperative.py` | أمري | حساب الرصيد الجديد، محاكاة السحب، المجاميع بحلقة `for` |
+| `app/services/procedures.py` | إجرائي | الدوال الخمس المطلوبة في الموضوع |
+| `app/services/banque.py` | كائني + إجرائي | الصنف `Banque`: واجهة كل العمليات، والتحويل الذري (atomique) |
+| `app/services/statistiques.py` | تصريحي (SQL) | الإحصائيات بـ `SELECT … GROUP BY` |
+| `app/functional/` | وظيفي | الرسوم، تحويل العملة، الفوائد، رمز التحقق، المبلغ بالحروف |
+| `app/routers/` | حدثي + تصريحي | كل مسار (route) يرد على طلب HTTP |
+| `app/schemas.py`, `database.py` | تصريحي | شكل البيانات (Pydantic) والجداول (`DeclarativeBase`) |
+| `app/security/`, `pdf/`, `seed.py` | إجرائي + أمري | كلمات السر، الرموز JWT، ملفات PDF، البيانات الوهمية |
+| `tests/` | إجرائي + كائني | 7 ملفات Pytest، ملف لكل جزء من الموضوع |
+
+### 3.2 الواجهة الأمامية (frontend — React)
+
+| المجلد أو الملف | النمط | ماذا يفعل |
+|---|---|---|
+| `src/App.jsx`, `components/` | تصريحي | المسارات والمكوّنات (`Tableau`، `Carte`، `Badge`، `Bordereau`) |
+| `src/index.css` | تصريحي | الألوان والخطوط والتنسيق |
+| `src/pages/agent/Guichet.jsx` | حدثي | شاشة الشباك: كل ضغطة زر يُرد عليها |
+| `src/pages/ChangerMotDePasse.jsx` | حدثي | قواعد كلمة السر تُفحص مع كل حرف |
+| `src/pages/DetailCompte.jsx` | حدثي + وظيفي | المرشحات (filtres) تشغّل `filter` / `map` / `reduce` |
+| `src/auth/Session.jsx`, `api/client.js` | حدثي | حدث «انتهاء الجلسة» يُرسَل ويُستقبل |
+| `src/utils/` | وظيفي | المبالغ بالسنتيم، الإحصائيات، رمز التحقق |
+| `src/i18n/` | تصريحي + وظيفي | قواميس الفرنسية والإنجليزية والعربية، ودالة `traduire()` |
+
+---
+
+## 4. شرح كل نمط بالتفصيل
+
+### 4.1 النمط الأمري (Impératif)
+
+**الفكرة:** نكتب **الخطوات بالترتيب**، ونغيّر قيم المتغيرات في كل خطوة. المبرمج هو من يقرر كل شيء: متى نتحقق، ومتى نطرح، ومتى نتوقف.
+
+**تشبيه:** وصفة طبخ مكتوبة سطرا بسطر.
+
+**أين في مشروعنا:** `backend/app/rules/imperative.py`. هذا هو مثال الموضوع: رصيد 50 000 دج، وسحب 12 000 دج.
+
+```python
+def simuler_retrait(solde, montant, decouvert_autorise=Decimal("0")) -> dict:
+    accepte = False
+    nouveau_solde = solde
+    message = ""
+
+    if montant <= 0:
+        message = "Refusé : le montant doit être strictement positif."
+    elif montant > solde + decouvert_autorise:
+        message = f"Refusé : solde insuffisant ({solde} DA disponibles)."
+    else:
+        accepte = True
+        nouveau_solde = solde - montant
+        message = f"Retrait de {montant} DA accepté. Nouveau solde : {nouveau_solde} DA."
+
+    return {"accepte": accepte, "nouveau_solde": nouveau_solde, "message": message}
+```
+
+**كيف تشرحه:**
+- عندنا ثلاثة متغيرات (`accepte`، `nouveau_solde`، `message`) تتغير حسب الطريق الذي يأخذه `if / elif / else`. تغيّر الحالة هذا هو قلب النمط الأمري.
+- الدالة `totaux_par_boucle()` تمر على العمليات بحلقة `for` وتجمع في عدّادات.
+- الدالة `calculer_nouveau_solde()` تستعملها كل أنواع الحسابات لتحديث الرصيد.
+
+### 4.2 النمط الإجرائي (Procédural)
+
+**الفكرة:** نقسّم المشكلة الكبيرة إلى **إجراءات (دوال) صغيرة**، كل واحدة لها اسم واضح ومدخلات محددة وترجع نتيجة. ثم نستدعيها واحدة بعد الأخرى.
+
+**تشبيه:** في البنك، كل موظف له مهمة: واحد يتحقق من الوثائق، وواحد يعدّ النقود، وواحد يسجّل. كل مهمة يمكن إعادة استعمالها.
+
+**أين في مشروعنا:** `backend/app/services/procedures.py`، وفيه بالضبط الدوال الخمس التي يطلبها الموضوع (الجزء B):
+
+| الدالة | ماذا تفعل |
+|---|---|
+| `verifierMontant()` | تتحقق أن المبلغ موجب وفيه رقمان بعد الفاصلة على الأكثر |
+| `calculerSolde()` | تعيد حساب الرصيد من سجل العمليات |
+| `effectuerDepot()` | إيداع: تتحقق ثم تضيف للحساب |
+| `effectuerRetrait()` | سحب: تتحقق ثم تخصم من الحساب |
+| `calculerTotalOperations()` | مجموع المبالغ، أو مجموع نوع واحد من العمليات |
+
+```python
+def effectuerRetrait(compte, montant, contexte=None,
+                     libelle="Retrait d'espèces", agent_id=None) -> Transaction:
+    valeur = verifierMontant(montant)          # 1. التحقق من المبلغ
+    compte.verifierActif()                     # 2. هل الحساب مفعّل؟
+    compte.verifierRetrait(valeur, contexte)   # 3. قاعدة السحب حسب نوع الحساب
+    return compte.debiter(valeur, TypeOperation.RETRAIT, libelle, agent_id)  # 4. الخصم
+```
+
+**كيف تشرحه:**
+- `effectuerRetrait` لا تعيد كتابة أي شيء، بل **تربط إجراءات موجودة** واحدا بعد الآخر.
+- `verifierMontant` مستعملة في الإيداع والسحب والتحويل وإنشاء القسيمة: قاعدة واحدة في مكان واحد.
+- كل دالة مختبرة وحدها في `tests/test_imperatif_procedural.py`.
+
+### 4.3 النمط الكائني (Orienté objet — POO)
+
+**الفكرة:** ننظّم البرنامج حول **كائنات** تمثل أشياء حقيقية (زبون، حساب، عملية). كل كائن يحمل **بياناته** (الخصائص) و**سلوكه** (الدوال). له ثلاثة أعمدة:
+
+| المبدأ | بالفرنسية | المعنى | في مشروعنا |
+|---|---|---|---|
+| **التغليف** | Encapsulation | البيانات محمية، لا تُغيَّر إلا من خلال دوال الكائن | الرصيد لا يتغير إلا عبر `crediter()` و`debiter()` |
+| **الوراثة** | Héritage | صنف «ابن» يأخذ كل ما عند صنف «الأب» | `CompteCourant` و`CompteEpargne` و`CompteDevise` ترث من `CompteBancaire` |
+| **تعدد الأشكال** | Polymorphisme | نفس اسم الدالة، لكن سلوك مختلف حسب الكائن | `motifRefusRetrait()` لها قاعدة مختلفة في كل نوع حساب |
+
+**تشبيه:** كل أنواع الحسابات «حساب بنكي» (وراثة)، لكن قواعد السحب تختلف: الحساب الجاري يسمح بالسحب على المكشوف، وحساب التوفير محدود بسحبين في الشهر (تعدد الأشكال).
+
+```mermaid
+classDiagram
+    class CompteBancaire {
+        <<abstraite>>
+        solde
+        crediter()
+        debiter()
+        motifRefusRetrait()*
+    }
+    class CompteCourant {
+        decouvert_autorise
+        motifRefusRetrait()
+    }
+    class CompteEpargne {
+        taux_interet
+        motifRefusRetrait()
+    }
+    class CompteDevise {
+        plafond_retrait_jour
+        motifRefusRetrait()
+    }
+    CompteBancaire <|-- CompteCourant
+    CompteBancaire <|-- CompteEpargne
+    CompteBancaire <|-- CompteDevise
+```
+
+```python
+class CompteCourant(CompteBancaire):
+    def motifRefusRetrait(self, montant, contexte):
+        if montant > self.soldeDisponible() + self.decouvert_autorise:   # يسمح بالمكشوف
+            return "SOLDE_INSUFFISANT"
+        ...
+
+class CompteEpargne(CompteBancaire):
+    def motifRefusRetrait(self, montant, contexte):
+        if contexte.retrait_especes and contexte.retraits_ce_mois >= self.RETRAITS_MAX_MOIS:
+            return "LIMITE_RETRAITS_EPARGNE"                             # سحبان في الشهر فقط
+        if self.soldeDisponible() - montant < self.SOLDE_MINIMUM:
+            return "SOLDE_MINIMUM_EPARGNE"                               # 1 000 دج حد أدنى
+        ...
+```
+
+**كيف تشرحه:**
+- `effectuerRetrait()` تستدعي `compte.verifierRetrait()` **دون أن تعرف نوع الحساب**. الكائن نفسه يعرف قاعدته. لا يوجد أي `if type == "EPARGNE"` في الكود.
+- لو أضفنا نوعا رابعا من الحسابات، لا نغيّر دالة السحب ولا دالة التحويل.
+- الصنف `Banque` هو «واجهة» (façade) تجمع كل العمليات. أي كتابة في قاعدة البيانات تمر عبر `atomique()`: إما أن يُحفظ كل شيء (COMMIT)، أو لا شيء (ROLLBACK).
+
+### 4.4 النمط الوظيفي (Fonctionnel)
+
+**الفكرة:** نحسب بـ **دوال نقية** (fonctions pures):
+- النتيجة تعتمد **فقط** على المدخلات: نفس المدخل يعطي دائما نفس النتيجة.
+- الدالة **لا تغيّر أي شيء** خارجها: لا قاعدة بيانات، لا ساعة، لا تعديل على القائمة التي تستقبلها.
+- نستعمل `filter` (تصفية)، و`map` (تحويل)، و`reduce` (تجميع) بدل الحلقات التي تغيّر المتغيرات.
+
+**تشبيه:** دالة رياضية مثل `f(x) = 2x`: كلما أعطيتها 3 ترجع 6، ولا تلمس أي شيء آخر.
+
+**أين في مشروعنا:**
+- في الخادم: `backend/app/functional/`، أي الرسوم وتحويل العملة والفوائد ورمز التحقق والمبلغ بالحروف والإحصائيات.
+- في المتصفح: `frontend/src/utils/`، أي المبالغ بالسنتيم والإحصائيات والتحقق من رقم القسيمة.
+
+```python
+# تركيب دوال نقية: الرسوم = النسبة × المبلغ، محصورة بين حد أدنى وحد أقصى
+def frais_proportionnels(montant, taux, minimum, maximum):
+    return arrondir(borner(montant * taux, minimum, maximum))
+```
+
+```js
+// reduce() يصنع كائنا جديدا في كل خطوة، ولا يغيّر القديم
+export const totauxParType = (operations) =>
+  operations.reduce((acc, op) => ({ ...acc, [op.type]: (acc[op.type] ?? 0) + enCentimes(op.montant) }), {})
+```
+
+**كيف تشرحه:**
+- **الدقة:** في JavaScript نجد `0.1 + 0.2 !== 0.3`، لذلك نحسب المبالغ **بالسنتيم كأعداد صحيحة**، وفي Python بـ `Decimal`. هذا هو القيد رقم 8 في الموضوع.
+- **نفس الخوارزمية في الجهتين:** `cle_controle()` في Python و`cleControle()` في JavaScript تحسبان رمز التحقق في رقم القسيمة. المتصفح يكتشف خطأ الكتابة **أثناء الكتابة**، والخادم يعيد التحقق.
+- **عزل ما ليس نقيا:** اختيار رقم عشوائي ليس عملية نقية، لذلك وضعناه في ملف آخر (`services/numeros.py`). المجلد `functional/` فيه فقط الدوال النقية حقا.
+- الاختبار يثبت النقاء: نأخذ نسخة من القائمة قبل الحساب (`copy.deepcopy`) ونتأكد أنها لم تتغير بعده.
+
+### 4.5 النمط التصريحي (Déclaratif)
+
+**الفكرة:** نصف **النتيجة التي نريدها** فقط، دون كتابة الخطوات. محرّك ما (قاعدة البيانات، React، المتصفح، Pydantic) هو من يقرر كيف يحققها.
+
+**تشبيه:** في المطعم تقول «أريد طبق كسكسي»، ولا تشرح للطباخ كيف يطبخه.
+
+**أين في مشروعنا: أربعة أشكال**
+
+| الشكل | الملف | ماذا نصف |
+|---|---|---|
+| **SQL** | `backend/app/services/statistiques.py` | «مجموع المبالغ حسب نوع العملية» |
+| **واجهة React** | `components/Interface.jsx` وكل الصفحات | ماذا يجب أن تعرض الشاشة حسب البيانات |
+| **شكل البيانات** | `schemas.py` (Pydantic)، `database.py` | البيانات المقبولة والجداول |
+| **التنسيق** | `frontend/src/index.css` | المظهر، دون شرح كيف يُرسم |
+
+```sql
+-- نقول ماذا نريد، وSQLite يقرر كيف يجمع
+SELECT type, COUNT(*) AS nombre, SUM(montant) AS total_centimes
+FROM   transactions
+WHERE  compte_id = :compte_id AND date >= :debut AND date <= :fin
+GROUP  BY type
+```
+
+```jsx
+// نصف أعمدة الجدول، والمكوّن Tableau يبني الجدول وحده (مقتطف مبسّط)
+<Tableau lignes={enCours} colonnes={[
+  { cle: 'numero_bordereau', titre: t('Numéro') },
+  { cle: 'statut', titre: t('Statut'), rendu: (d) => <Badge statut={d.statut} /> },
+]} />
+```
+
+**كيف تشرحه:**
+- طلب SQL لا يمر على الأسطر بيده. ومع ذلك يعطي **نفس النتيجة** التي تعطيها الحلقة الأمرية `totaux_par_boucle()` (انظر الجزء 5).
+- في React لا نلمس الصفحة (DOM) مباشرة. عندما تتغير البيانات، React يعيد حساب العرض وحده. المكوّن `Tableau` مستعمل 10 مرات في 9 شاشات.
+- قوائم كل دور (`Layout.jsx`) والترجمات (`i18n/`) هي **بيانات** فقط: إضافة رابط أو لغة لا تحتاج كودا جديدا.
+
+### 4.6 النمط الحدثي (Événementiel)
+
+**الفكرة:** البرنامج لا يمشي بترتيب ثابت، بل **ينتظر حدثا** (نقرة، ضغطة زر، كتابة حرف، طلب عبر الشبكة، انتهاء الجلسة)، ثم ينفذ **المعالج** (gestionnaire) المرتبط به.
+
+**تشبيه:** جرس الباب: لا تفعل شيئا حتى يرن، وعندما يرن تفتح.
+
+**أين في مشروعنا:**
+- **الواجهة:** أكثر من 90 معالجا (`onChange`، `onClick`، `onSubmit`، `onKeyDown`، `onBlur`). أوضح مثال هو شاشة الشباك `Guichet.jsx`.
+- **أحداث التطبيق:** `api/client.js` **يرسل** الحدث `session-expiree`، و`auth/Session.jsx` **يستمع** له ويُخرج المستخدم.
+- **الخادم:** كل مسار في FastAPI هو معالج يشتغل عند وصول طلب HTTP، مثلا `@routeur_agent.post("/bordereaux/{numero}/valider")`.
+
+```jsx
+// كل حرف (onChange) يعيد فحص رمز التحقق، وزر Entrée (onKeyDown) يطلق البحث
+<input value={saisie} onChange={(e) => setSaisie(e.target.value)} onKeyDown={surTouche} />
+
+const surTouche = (evenement) => {
+  if (evenement.key === 'Enter') {
+    evenement.preventDefault()
+    rechercher()
+  }
+}
+```
+
+```js
+// المرسِل: api/client.js
+window.dispatchEvent(new CustomEvent('session-expiree', { detail: erreur.message }))
+// المستقبِل: auth/Session.jsx
+window.addEventListener('session-expiree', surExpiration)
+```
+
+**كيف تشرحه:**
+- في الشباك، العون (agent) يكتب ويصحح ويضغط Entrée ويؤشر «تحققت من بطاقة التعريف» ثم يقبل أو يرفض، **بالترتيب الذي يريده**. النمط الحدثي هو الذي يصف هذا السلوك.
+- زر «Accepter» لا يشتغل إلا بعد حدث «التأشير على الخانة». هكذا الواجهة نفسها تفرض قاعدة التحقق من الهوية.
+- المرسِل لا يعرف المستقبِل: أي طلب للـ API يمكنه أن يُنهي الجلسة دون أن تهتم الصفحات بذلك.
+
+---
+
+## 5. نفس الحساب بثلاث طرق مختلفة
+
+هذا **أفضل مثال لتشرح الفرق** بين الأنماط. المشروع يحسب «مجموع العمليات حسب النوع» بثلاث طرق:
+
+| | أمري | وظيفي | تصريحي |
+|---|---|---|---|
+| الملف | `rules/imperative.py` | `functional/stats.py` | `services/statistiques.py` |
+| الطريقة | حلقة `for` ومتغيرات نزيد فيها | `reduce()` يصنع قاموسا جديدا في كل خطوة | `SELECT … SUM … GROUP BY` |
+| من يقرر الخوارزمية؟ | المبرمج | المبرمج، دون تغيير أي حالة | محرك SQLite |
+
+```python
+# أمري: نقول كيف
+total_depots = Decimal("0.00")
+for transaction in transactions:
+    if transaction.type == TypeOperation.DEPOT:
+        total_depots = total_depots + transaction.montant
+```
+
+```python
+# وظيفي: نركّب دوالا نقية
+reduce(lambda acc, op: {**acc, str(op.type): acc.get(str(op.type), ZERO) + op.montant}, operations, {})
+```
+
+```sql
+-- تصريحي: نقول ماذا
+SELECT type, SUM(montant) FROM transactions WHERE compte_id = :compte_id GROUP BY type
+```
+
+شاشة «تفاصيل الحساب» تعرض الاثنين معا: المجاميع المحسوبة في المتصفح (وظيفي)، والمجاميع القادمة من الخادم (SQL). بدون مرشحات، يعطيان نفس مجموع الإيداعات، مثلا 321 600,00 دج للحساب الجاري التجريبي.
+
+---
+
+## 6. عملية سحب واحدة تمر عبر الأنماط الستة
+
+لما يقبل العون قسيمة سحب في الشباك، العملية تمر عبر **كل الأنماط**:
+
+| الخطوة | ماذا يحدث | النمط |
+|---|---|---|
+| 1 | العون يكتب الرقم ويضغط Entrée ثم «Accepter» | **حدثي** |
+| 2 | رمز التحقق يُفحص مع كل حرف (`etatSaisie`) | **وظيفي** |
+| 3 | المسار `POST /api/agent/bordereaux/{numero}/valider` يستقبل الطلب | **حدثي** (خادم) |
+| 4 | `Banque.validerDemande()` تنظّم العملية | **كائني** |
+| 5 | `effectuerRetrait()` تربط التحقق والخصم | **إجرائي** |
+| 6 | `CompteEpargne.motifRefusRetrait()` تطبق قاعدة التوفير | **كائني** (تعدد الأشكال) |
+| 7 | `calculer_nouveau_solde()` تحسب الرصيد الجديد | **أمري** |
+| 8 | الحفظ (COMMIT أو ROLLBACK)، ثم الشاشة تتحدث وحدها | **تصريحي** (ORM و React) |
+
+---
+
+## 7. الاختبارات التي تثبت كل نمط
+
+الاختبارات مرتبة **حسب النمط**، ونستطيع أن نبيّن كل جزء من الموضوع وحده:
+
+| ملف الاختبار | ماذا يتحقق منه | النمط |
+|---|---|---|
+| `test_imperatif_procedural.py` | مثال الموضوع (50 000 − 12 000)، والدوال الخمس | أمري (الجزء A) + إجرائي (الجزء B) |
+| `test_poo.py` | تغليف الرصيد، الوراثة، `peutRetirer()` مختلفة حسب الحساب | كائني (الجزء C) |
+| `test_fonctionnel.py` | النقاء (القائمة لا تتغير)، `filter` / `map` / `reduce` | وظيفي (الجزء D) |
+| `test_virement.py` | التحويل الذري، رفض نفس الحساب، تحويل العملة | كائني + SQL |
+| `test_bordereaux.py` | الدورة كاملة: طلب ← قسيمة ← شباك | كل الأنماط |
+| `frontend/__tests__/composants.test.jsx` | الكتابة في الشباك، Entrée، الخانة، زر القبول | حدثي + تصريحي |
+| `frontend/__tests__/utilitaires.test.js` | المبالغ بالسنتيم، الإحصائيات، رمز التحقق | وظيفي |
+
+التشغيل: `python -m pytest` داخل `backend/`، و`npm test` داخل `frontend/`.
+
+---
+
+## 8. ملخص للحفظ
+
+| النمط | الكلمة المفتاح | الملف الذي تذكره |
+|---|---|---|
+| أمري | **كيف**: خطوة بخطوة، متغيرات تتغير | `rules/imperative.py` |
+| إجرائي | **دوال** صغيرة يعاد استعمالها | `services/procedures.py` |
+| كائني | **كائنات**: تغليف، وراثة، تعدد أشكال | `domain/comptes.py` |
+| وظيفي | **دوال نقية**: `filter` / `map` / `reduce` | `functional/`، `utils/` |
+| تصريحي | **ماذا**: والمحرك يقرر كيف | `statistiques.py` (SQL)، React |
+| حدثي | **ردّ فعل** على الأحداث | `Guichet.jsx`، `Session.jsx` |
+
+**الجملة التي تلخص كل شيء:**
+في BankServices، كل نمط وُضع حيث هو الأنسب. الكائني لتمثيل البنك وقواعده، والإجرائي للعمليات التي نعيد استعمالها، والأمري للحساب خطوة بخطوة، والوظيفي للحسابات الدقيقة والإحصائيات، والتصريحي للطلبات والواجهة، والحدثي للرد على المستخدم.

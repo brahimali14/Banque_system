@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Base SQLite locale (recréée par python -m app.seed --reset)
+*.db
+
+# Node / React
+node_modules/
+dist/
+
+# Éditeurs et système
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
